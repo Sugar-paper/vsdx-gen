@@ -1975,6 +1975,45 @@ class VisioCompatibilityTests(unittest.TestCase):
             errors = vsdx_gen.validate(mutated)
         self.assertTrue(any("ObjType" in error for error in errors))
 
+    def test_shape_color_cells_are_hex_not_palette_indexes(self):
+        data = {
+            "nodes": [
+                InputContractTests.node(
+                    "A", fill="#1A2B3C", stroke="#445566", fontColor="#AABBCC"
+                ),
+                InputContractTests.node("B", x=4, fill="#FFFFFF"),
+            ],
+            "edges": [
+                {"from": "A", "to": "B", "label": "x", "lineColor": "#010203"},
+            ],
+        }
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp, data)
+            with zipfile.ZipFile(output) as package:
+                page = ET.fromstring(package.read("visio/pages/page1.xml"))
+
+        for cell in page.findall(".//" + vsdx_gen.V("Cell")):
+            if cell.get("N") in ("FillForegnd", "FillBkgnd", "LineColor", "Color"):
+                with self.subTest(cell=cell.get("N"), value=cell.get("V")):
+                    self.assertRegex(cell.get("V") or "", r"^#[0-9A-F]{6}$")
+
+    def test_validate_rejects_numeric_color_cells(self):
+        def change_fill_to_index(root):
+            next(
+                cell
+                for cell in root.findall(".//" + vsdx_gen.V("Cell"))
+                if cell.get("N") == "FillForegnd"
+            ).set("V", "56")
+
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            mutated = self.mutate_package(
+                output,
+                xml_mutators={"visio/pages/page1.xml": change_fill_to_index},
+            )
+            errors = vsdx_gen.validate(mutated)
+        self.assertTrue(any("color" in error.lower() for error in errors))
+
 
 class EdgeSemanticsTests(unittest.TestCase):
     """Connector anchors, geometry paths, glue records, and validation."""

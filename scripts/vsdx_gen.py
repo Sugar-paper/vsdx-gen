@@ -849,17 +849,17 @@ def _build_shape(n, sid, palette):
         shape.append(_cell('FillPattern', 0))
     else:
         shape.append(_cell('FillPattern', 1))
-        shape.append(_cell('FillForegnd', palette[fill]))
+        shape.append(_cell('FillForegnd', fill))
     if n.get('gradient'):
         shape.append(_cell('FillGradientEnabled', 1))
         shape.append(_cell('FillPattern', 25))
-        shape.append(_cell('FillBkgnd', palette[n['gradient'].upper()]))
+        shape.append(_cell('FillBkgnd', n['gradient'].upper()))
     if n.get('opacity') is not None and 0 <= float(n['opacity']) < 100:
         # VSDX stores transparency as a 0..1 fraction; the importer computes
         # opacity = 100 - trans*100
         shape.append(_cell('FillForegndTrans', (100.0 - float(n['opacity'])) / 100.0))
     shape.append(_cell('LinePattern', 2 if n.get('dashed') else 1))
-    shape.append(_cell('LineColor', palette[stroke]))
+    shape.append(_cell('LineColor', stroke))
     shape.append(_cell('LineWeight', n.get('strokeWidth', 0.01)))
     shape.append(_cell('VerticalAlign', {'top': 0, 'middle': 1, 'bottom': 2}
                       .get(n.get('valign', 'middle'), 1)))
@@ -870,7 +870,7 @@ def _build_shape(n, sid, palette):
     font_color = (n.get('fontColor') or '#000000').upper()
     style_bits = (1 if n.get('bold') else 0) | (2 if n.get('italic') else 0) \
         | (4 if n.get('underline') else 0)
-    shape.append(_char_section(font, size_in, palette[font_color], style_bits))
+    shape.append(_char_section(font, size_in, font_color, style_bits))
     shape.append(_para_section({'left': 0, 'center': 1, 'right': 2}
                                .get(n.get('align', 'center'), 1)))
     text = _el(V('Text'))
@@ -1013,7 +1013,7 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
     shape.append(_cell('EndArrow', ARROWS.get(e.get('endArrow', 'block'), 4)))
     shape.append(_cell('LinePattern', 2 if e.get('dashed') else 1))
     line_color = (e.get('lineColor') or '#000000').upper()
-    shape.append(_cell('LineColor', palette[line_color]))
+    shape.append(_cell('LineColor', line_color))
     shape.append(_cell('LineWeight', e.get('strokeWidth', 0.01)))
     # Connector geometry is relative to BeginX/BeginY in page coordinates.
     geom = _el(V('Section'), N='Geometry', IX='0')
@@ -1050,7 +1050,7 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
         font = e.get('fontFamily', 'Microsoft YaHei')
         size_in = round(float(e.get('fontSize', 9)) / 72.0, 4)
         lc = (e.get('labelColor') or '#000000').upper()
-        shape.append(_char_section(font, size_in, palette[lc]))
+        shape.append(_char_section(font, size_in, lc))
         text = _el(V('Text'))
         text.text = e.get('label', '')
         shape.append(text)
@@ -2055,6 +2055,24 @@ def _validate_connector_contract(page):
     return errors
 
 
+SHAPE_COLOR_CELL_NAMES = ('FillForegnd', 'FillBkgnd', 'LineColor', 'Color')
+_HEX_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
+
+
+def _validate_shape_colors(page):
+    errors = []
+    for cell in page.findall('.//' + V('Cell')):
+        if cell.get('N') not in SHAPE_COLOR_CELL_NAMES:
+            continue
+        value = cell.get('V') or ''
+        if not _HEX_COLOR_RE.match(value):
+            errors.append(
+                'shape color cell %s is %r, expected #RRGGBB hex'
+                % (cell.get('N'), _xml_metadata_display(value))
+            )
+    return errors
+
+
 def validate(out_path, expected_connector_count=None,
              expected_connector_semantics=None):
     """Structural + semantic checks on the generated package."""
@@ -2135,6 +2153,10 @@ def validate(out_path, expected_connector_count=None,
             ))
         if 'visio/pages/page1.xml' in parsed_parts:
             errors.extend(_validate_connector_contract(
+                parsed_parts['visio/pages/page1.xml']
+            ))
+        if 'visio/pages/page1.xml' in parsed_parts:
+            errors.extend(_validate_shape_colors(
                 parsed_parts['visio/pages/page1.xml']
             ))
         # PageSheet must carry PageWidth/PageHeight for coordinate conversion
