@@ -6,8 +6,10 @@ description: Use when users need Mermaid, structured workflow or architecture de
 # VSDX 生成器
 
 将图描述（JSON）生成为 Open Packaging 格式的单页 `.vsdx` 文件（ZIP + XML 部件），
-目标是让 draw.io 的 VSDX 导入器保留支持范围内的节点、连接和样式。生成器是纯 Python
-标准库；本技能不把“Visio 真机打开”或所有 draw.io 版本兼容当作已完成证明。
+同时满足 Microsoft Visio 与 draw.io 的 VSDX 导入器，保留支持范围内的节点、连接和样式。
+生成器是纯 Python 标准库。已实测：Visio 2016 桌面版可直接打开生成文件（COM 打开，
+1 页/39 形状）；draw.io 31.1.5 四案例导入全部通过。其他 Visio 版本、Office 365 网页版与
+所有 draw.io 版本仍未承诺全兼容。
 
 图片/手绘输入由模型先重建为本技能的 JSON 契约；脚本本身不执行 OCR 或图像矢量化，
 也不解析图片内容。模糊文字、连线关系或无法直接重画的位图/图标，应先向用户确认是近似重画还是省略。
@@ -177,6 +179,8 @@ python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-nodes 2
 1. `vsdx_gen.py` 输出 `structure OK`（含大小写几何单元格防回归检查）
 2. 若执行 draw.io 集成验证：先确认 `test_import.py` 成功，再运行 `verify_layout.py` 并确认零问题（重叠/穿节点/标签遮挡）；未执行时明确标注未验证
 3. （若环境有 Visio）真机打开一次确认无“修复”弹窗；本技能不把该手工检查替换为自动结论
+   当前技能已用 Visio 2016 桌面版 COM 打开验证（1 页/39 形状）；Office 365 网页上传在修复前
+   失败（报“打包时遇到错误”），修复后未重试时须如实标注
 
 ## 关键实现细节与坑（维护时必读）
 
@@ -192,6 +196,10 @@ python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-nodes 2
 10. **内置形状行数据是点元组列表** `[(x, y)]`，`_geom_section` 会摊平后与 `_ROW_CELLS` 对齐；直接 zip 会把整个元组序列化成 `V="(x, y)"`
 11. **必须输出 LocPinX/LocPinY 单元格**（= w/2, h/2）：draw.io 导入器用 `x = PinX - LocPinX`、`y = pageH - (PinY + h - LocPinY)` 把 Pin（中心）换算成左上角。缺失时按 0 处理 → 形状整体偏右 w/2、偏上 h/2
 12. **验证脚本陷阱**：不能用正则从 mxCell 文本中提取坐标；`verify_layout.py` 使用 ElementTree，只从 `<mxGeometry>` 及结构化点元素读取
+13. **`visio/windows.xml` 是 Microsoft Visio 的必需部件**：缺失时 Visio 报“某些部分丢失或无效”。
+    生成器必须输出该部件、在 `[Content_Types].xml` 声明 `application/vnd.ms-visio.windows+xml`，
+    并在 `visio/_rels/document.xml.rels` 增加 rId2（类型 .../relationships/windows）。参考项目
+    IoTServ/visioeditor 的最小结构漏掉此部件，其自产文件同样打不开；`validate()` 已加防回归检查
 
 ## 使用示例
 
@@ -219,4 +227,6 @@ python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>"
 
 - 只生成和验证单页 VSDX；泳道、容器、主题和 Visio master 扩展不在范围内
 - 图片/手绘需要模型人工重建 JSON，不是脚本直接 OCR、识图或矢量化；契约也不包含位图/图标嵌入字段，无法重画的内容必须省略并说明
-- draw.io 实测不能替代 Visio 真机验收；没有 Visio 时必须明确标注“Visio 未验证”
+- 已实测：Visio 2016 桌面版（64 位）可打开生成文件（1 页/39 形状）；draw.io 31.1.5 四案例导入通过。
+  未覆盖：其他 Visio 版本、Office 365 网页上传（修复前报“打包时遇到错误”，修复后未重试）、
+  其他 draw.io 版本；未实测时不得扩大兼容性结论

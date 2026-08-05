@@ -83,6 +83,7 @@ NS_CP = 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties
 NS_DC = 'http://purl.org/dc/elements/1.1/'
 NS_DCTERMS = 'http://purl.org/dc/terms/'
 NS_XSI = 'http://www.w3.org/2001/XMLSchema-instance'
+NS_EP = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'
 
 # Only prefix namespaces that must coexist in one part. The main namespace of
 # each part is left to ET's auto nsN prefix and rewritten to the default
@@ -797,10 +798,10 @@ def _node_geometry(n, w, h):
     return _geom_section(builder(w, h))
 
 
-def _char_section(font_id, size_in, color_idx, style_bits=0):
+def _char_section(font_name, size_in, color_idx, style_bits=0):
     sec = _el(V('Section'), N='Character')
     row = _el(V('Row'), IX='0')
-    row.append(_cell('Font', font_id))
+    row.append(_cell('Font', font_name))
     row.append(_cell('Size', size_in))
     row.append(_cell('Color', color_idx))
     if style_bits:
@@ -859,12 +860,11 @@ def _build_shape(n, sid, palette):
     shape.append(_node_geometry(n, w, h))
 
     font = n.get('fontFamily', 'Microsoft YaHei')
-    font_id = FONTS.index(font) if font in FONTS else 2
     size_in = round(float(n.get('fontSize', 12)) / 72.0, 4)
     font_color = (n.get('fontColor') or '#000000').upper()
     style_bits = (1 if n.get('bold') else 0) | (2 if n.get('italic') else 0) \
         | (4 if n.get('underline') else 0)
-    shape.append(_char_section(font_id, size_in, palette[font_color], style_bits))
+    shape.append(_char_section(font, size_in, palette[font_color], style_bits))
     shape.append(_para_section({'left': 0, 'center': 1, 'right': 2}
                                .get(n.get('align', 'center'), 1)))
     text = _el(V('Text'))
@@ -1019,10 +1019,9 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
         for cell_name in ('TxtLocPinX', 'TxtLocPinY', 'TxtWidth', 'TxtHeight'):
             shape.append(_cell(cell_name, 0))
         font = e.get('fontFamily', 'Microsoft YaHei')
-        font_id = FONTS.index(font) if font in FONTS else 2
         size_in = round(float(e.get('fontSize', 9)) / 72.0, 4)
         lc = (e.get('labelColor') or '#000000').upper()
-        shape.append(_char_section(font_id, size_in, palette[lc]))
+        shape.append(_char_section(font, size_in, palette[lc]))
         text = _el(V('Text'))
         text.text = e.get('label', '')
         shape.append(text)
@@ -1039,72 +1038,189 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
 
 # ---------------------------------------------------------------- document
 
-def _document_xml(palette):
-    doc = _el(V('VisioDocument'))
-    props = _el(V('DocumentProperties'))
-    creator = _el(V('Creator'))
-    creator.text = 'vsdx-gen'
-    props.append(creator)
-    props.append(_el(V('Description')))
-    doc.append(props)
-    doc.append(_el(V('DocumentSettings')))
+DOCUMENT_SETTING_ATTRIBUTES = {
+    'TopPage': '0',
+    'DefaultTextStyle': '0',
+    'DefaultLineStyle': '0',
+    'DefaultFillStyle': '0',
+    'DefaultGuideStyle': '0',
+}
+DOCUMENT_SETTING_CHILDREN = (
+    ('GlueSettings', '9'),
+    ('SnapSettings', '65847'),
+    ('DynamicGridEnabled', '1'),
+)
+STYLE_CELLS = (
+    ('EnableLineProps', '1'),
+    ('EnableFillProps', '1'),
+    ('EnableTextProps', '1'),
+    ('LineWeight', '0.01'),
+    ('LineColor', '#000000'),
+    ('LinePattern', '1'),
+    ('LineCap', '0'),
+    ('BeginArrow', '0'),
+    ('EndArrow', '0'),
+    ('BeginArrowSize', '2'),
+    ('EndArrowSize', '2'),
+    ('FillForegnd', '#FFFFFF'),
+    ('FillBkgnd', '#FFFFFF'),
+    ('FillPattern', '1'),
+    ('ShdwPattern', '0'),
+    ('ShapeShdwShow', '0'),
+    ('VerticalAlign', '1'),
+    ('LeftMargin', '0.04'),
+    ('RightMargin', '0.04'),
+    ('TopMargin', '0.04'),
+    ('BottomMargin', '0.04'),
+)
+STYLE_CHARACTER_CELLS = (
+    ('Font', 'Arial'),
+    ('Color', '#000000'),
+    ('Style', '0'),
+    ('Size', '0.1666666666666667'),
+    ('AsianFont', 'Microsoft YaHei'),
+    ('LangID', 'zh-CN'),
+)
+STYLE_PARAGRAPH_CELLS = (
+    ('HorzAlign', '1'),
+    ('SpLine', '-1.2'),
+)
+
+
+def _colors_xml(palette):
     colors = _el(V('Colors'))
     for i, c in enumerate(DEFAULT_PALETTE):
         colors.append(_el(V('ColorEntry'), IX=str(i), RGB=c))
     custom = {i: c for c, i in palette.items() if i >= len(DEFAULT_PALETTE)}
     for i in sorted(custom):
         colors.append(_el(V('ColorEntry'), IX=str(i), RGB=custom[i]))
-    doc.append(colors)
+    return colors
+
+
+def _face_names_xml():
+    faces = _el(V('FaceNames'))
+    for fname in FONTS:
+        faces.append(_el(V('FaceName'), NameU=fname))
+    return faces
+
+
+def _style_sheets_xml():
     styles = _el(V('StyleSheets'))
     for sid, name in ((0, 'No Style'), (1, 'Basic')):
-        ss = _el(V('StyleSheet'), ID=str(sid), Name=name)
-        for cname, cval in (('LineWeight', '0.01'), ('LinePattern', '1'),
-                            ('LineColor', '0'), ('BeginArrow', '0'),
-                            ('EndArrow', '0'), ('LineCap', '1'),
-                            ('CharCount', '0'), ('TxtHeight', '0.125'),
-                            ('TxtWidth', '0.75'), ('TxtAngle', '0'),
-                            ('TxtPinX', '0'), ('TxtPinY', '0'),
-                            ('TxtLocPinX', '0'), ('TxtLocPinY', '0'),
-                            ('TxtBlkH', '0.125'), ('TxtBlkW', '0.75'),
-                            ('VerticalAlign', '0'), ('FillPattern', '1'),
-                            ('FillForegnd', '1'), ('FillBkgnd', '0'),
-                            ('LineColorTrans', '0'), ('FillForegndTrans', '0'),
-                            ('FillBkgndTrans', '0')):
+        ss = _el(V('StyleSheet'), ID=str(sid), Name=name, NameU=name)
+        for cname, cval in STYLE_CELLS:
             ss.append(_cell(cname, cval))
+        char = _el(V('Section'), N='Character')
+        char_row = _el(V('Row'), IX='0')
+        for cname, cval in STYLE_CHARACTER_CELLS:
+            char_row.append(_cell(cname, cval))
+        char.append(char_row)
+        ss.append(char)
+        para = _el(V('Section'), N='Paragraph')
+        para_row = _el(V('Row'), IX='0')
+        for cname, cval in STYLE_PARAGRAPH_CELLS:
+            para_row.append(_cell(cname, cval))
+        para.append(para_row)
+        ss.append(para)
         styles.append(ss)
-    doc.append(styles)
-    fonts = _el(V('Fonts'))
-    for i, fname in enumerate(FONTS):
-        charset = '134' if fname in ('Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi') else '1'
-        panose = ('020B0503020202020204' if fname == 'Microsoft YaHei'
-                  else '020B0604020202020204')
-        fonts.append(_el(V('Font'), ID=str(i), Name=fname, Charset=charset,
-                         Panose=panose, Flags='0'))
-    doc.append(fonts)
+    return styles
+
+
+def _document_xml(palette):
+    doc = _el(V('VisioDocument'))
+    settings = _el(V('DocumentSettings'), **DOCUMENT_SETTING_ATTRIBUTES)
+    for name, value in DOCUMENT_SETTING_CHILDREN:
+        child = _el(V(name))
+        child.text = value
+        settings.append(child)
+    doc.append(settings)
+    doc.append(_colors_xml(palette))
+    doc.append(_face_names_xml())
+    doc.append(_style_sheets_xml())
     # NOTE: no <Pages> section here on purpose. draw.io's importer walks
     # document.xml with importNodes() using a LIVE getElementsByTagName
     # NodeList; a Pages>Page>Rel section makes it re-match its own appended
     # nodes and loop forever. Page content is discovered via
     # initPages -> parseNodes -> resolveRel (pages.xml + its rels), which
     # needs no Rel elements in document.xml.
-    doc.append(_el(V('EventList')))
     return doc
+
+
+PAGE_CELLS = (
+    ('ShdwOffsetX', '0.125'),
+    ('ShdwOffsetY', '-0.125'),
+    ('PageScale', '1'),
+    ('DrawingScale', '1'),
+    ('DrawingSizeType', '0'),
+    ('DrawingScaleType', '0'),
+    ('InhibitSnap', '0'),
+    ('PageLockReplace', '0'),
+    ('PageLockDuplicate', '0'),
+    ('UIVisibility', '0'),
+    ('ShdwType', '0'),
+    ('ShdwObliqueAngle', '0'),
+    ('ShdwScaleFactor', '1'),
+    ('DrawingResizeType', '2'),
+    ('PageShapeSplit', '1'),
+    ('PageLeftMargin', '0'),
+    ('PageRightMargin', '0'),
+    ('PageTopMargin', '0'),
+    ('PageBottomMargin', '0'),
+    ('PrintPageOrientation', '2'),
+)
+PAGE_POINT_UNIT_CELLS = frozenset(('PageScale', 'DrawingScale'))
+
+
+def _fmt(value):
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _pages_xml(page_cfg):
     pages = _el(V('Pages'))
-    p = _el(V('Page'), ID='0', Name=page_cfg['name'], NameU=page_cfg['name'])
+    p = _el(V('Page'), ID='0', Name=page_cfg['name'], NameU=page_cfg['name'],
+            ViewScale='1',
+            ViewCenterX=_fmt(page_cfg['width'] / 2.0),
+            ViewCenterY=_fmt(page_cfg['height'] / 2.0))
     sheet = _el(V('PageSheet'))
-    for cname, cval in (('PageWidth', page_cfg['width']),
-                        ('PageHeight', page_cfg['height']),
-                        ('PageScale', 1), ('DrawingScale', 1),
-                        ('DrawingScaleType', 0), ('DrawingSizeType', 3),
-                        ('ShowPageBreaks', 1)):
-        sheet.append(_cell(cname, cval))
+    sheet.append(_cell('PageWidth', page_cfg['width']))
+    sheet.append(_cell('PageHeight', page_cfg['height']))
+    for cname, cval in PAGE_CELLS:
+        if cname in PAGE_POINT_UNIT_CELLS:
+            sheet.append(_el(V('Cell'), N=cname, V=cval, U='PT'))
+        else:
+            sheet.append(_cell(cname, cval))
     p.append(sheet)
     p.append(_el(V('Rel'), **{RID_ATTR: 'rId1'}))
     pages.append(p)
     return pages
+
+
+def _windows_xml(page_cfg):
+    windows = _el(
+        V('Windows'), ClientHeight='590', ClientWidth='1438',
+        **{'{http://www.w3.org/XML/1998/namespace}space': 'preserve'},
+    )
+    window = _el(
+        V('Window'), WindowState='1073741824', WindowType='Drawing', ID='0',
+        ViewScale='-1',
+        ViewCenterX=_fmt(page_cfg['width'] / 2.0),
+        ViewCenterY=_fmt(page_cfg['height'] / 2.0),
+        ContainerType='Page', WindowWidth='1454', WindowLeft='-8',
+        Page='0', WindowTop='-30', WindowHeight='628',
+    )
+    for name, value in (
+            ('ShowRulers', '1'), ('ShowGrid', '0'), ('ShowPageBreaks', '0'),
+            ('ShowGuides', '1'), ('ShowConnectionPoints', '1'),
+            ('GlueSettings', '9'), ('SnapSettings', '294'),
+            ('SnapExtensions', '34'), ('DynamicGridEnabled', '1'),
+            ('TabSplitterPos', '0.5')):
+        child = _el(V(name))
+        child.text = value
+        window.append(child)
+    windows.append(window)
+    return windows
 
 
 def _page_xml(nodes, edges, palette):
@@ -1131,32 +1247,22 @@ def _content_types_xml():
     types.append(_el(CT('Default'), Extension='rels',
                      ContentType='application/vnd.openxmlformats-package.relationships+xml'))
     types.append(_el(CT('Default'), Extension='xml', ContentType='application/xml'))
-    for part, ct in (
-            ('/docProps/core.xml',
-             'application/vnd.openxmlformats-package.core-properties+xml'),
-            ('/visio/document.xml', 'application/vnd.ms-visio.drawing.main+xml'),
-            ('/visio/pages/pages.xml', 'application/vnd.ms-visio.pages+xml'),
-            ('/visio/pages/page1.xml', 'application/vnd.ms-visio.page+xml')):
+    for part, ct in REQUIRED_CONTENT_TYPES:
         types.append(_el(CT('Override'), PartName=part, ContentType=ct))
     return types
 
 
 def _root_rels_xml():
     rels = _el(REL('Relationships'))
-    rels.append(_el(REL('Relationship'), Id='rId1',
-                    Type='http://schemas.microsoft.com/visio/2010/relationships/document',
-                    Target='visio/document.xml'))
-    rels.append(_el(REL('Relationship'), Id='rId2',
-                    Type='http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties',
-                    Target='docProps/core.xml'))
+    for rid, rtype, target in REQUIRED_ROOT_RELATIONSHIPS:
+        rels.append(_el(REL('Relationship'), Id=rid, Type=rtype, Target=target))
     return rels
 
 
 def _document_rels_xml():
     rels = _el(REL('Relationships'))
-    rels.append(_el(REL('Relationship'), Id='rId1',
-                    Type='http://schemas.microsoft.com/visio/2010/relationships/pages',
-                    Target='pages/pages.xml'))
+    for rid, rtype, target in REQUIRED_DOCUMENT_RELATIONSHIPS:
+        rels.append(_el(REL('Relationship'), Id=rid, Type=rtype, Target=target))
     return rels
 
 
@@ -1181,6 +1287,14 @@ def _doc_props_core(title):
     cp.append(c)
     cp.append(d)
     return cp
+
+
+def _doc_props_app():
+    properties = _el('{%s}Properties' % NS_EP)
+    application = _el('{%s}Application' % NS_EP)
+    application.text = 'vsdx-gen'
+    properties.append(application)
+    return properties
 
 
 def _serialize(root):
@@ -1274,7 +1388,9 @@ def generate(data, out_path):
         ('_rels/.rels', _serialize(_root_rels_xml())),
         ('docProps/core.xml',
          _serialize(_doc_props_core(page_cfg.get('title', page_cfg['name'])))),
+        ('docProps/app.xml', _serialize(_doc_props_app())),
         ('visio/document.xml', _serialize(_document_xml(palette))),
+        ('visio/windows.xml', _serialize(_windows_xml(page_cfg))),
         ('visio/_rels/document.xml.rels', _serialize(_document_rels_xml())),
         ('visio/pages/pages.xml', _serialize(_pages_xml(page_cfg))),
         ('visio/pages/_rels/pages.xml.rels', _serialize(_pages_rels_xml())),
@@ -1567,9 +1683,291 @@ def _connector_semantic_errors(
     return errors
 
 
-REQUIRED_PARTS = ('[Content_Types].xml', '_rels/.rels', 'visio/document.xml',
+REQUIRED_PARTS = ('[Content_Types].xml', '_rels/.rels',
+                  'docProps/core.xml', 'docProps/app.xml',
+                  'visio/document.xml',
+                  'visio/windows.xml',
                   'visio/_rels/document.xml.rels', 'visio/pages/pages.xml',
                   'visio/pages/_rels/pages.xml.rels', 'visio/pages/page1.xml')
+
+REQUIRED_CONTENT_TYPES = (
+    ('/docProps/core.xml',
+     'application/vnd.openxmlformats-package.core-properties+xml'),
+    ('/docProps/app.xml',
+     'application/vnd.openxmlformats-officedocument.extended-properties+xml'),
+    ('/visio/document.xml', 'application/vnd.ms-visio.drawing.main+xml'),
+    ('/visio/windows.xml', 'application/vnd.ms-visio.windows+xml'),
+    ('/visio/pages/pages.xml', 'application/vnd.ms-visio.pages+xml'),
+    ('/visio/pages/page1.xml', 'application/vnd.ms-visio.page+xml'),
+)
+
+REQUIRED_ROOT_RELATIONSHIPS = (
+    ('rId1', 'http://schemas.microsoft.com/visio/2010/relationships/document',
+     'visio/document.xml'),
+    ('rId2',
+     'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties',
+     'docProps/core.xml'),
+    ('rId3',
+     'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties',
+     'docProps/app.xml'),
+)
+
+REQUIRED_DOCUMENT_RELATIONSHIPS = (
+    ('rId1',
+     'http://schemas.microsoft.com/visio/2010/relationships/pages',
+     'pages/pages.xml'),
+    ('rId2',
+     'http://schemas.microsoft.com/visio/2010/relationships/windows',
+     'windows.xml'),
+)
+
+DOCUMENT_CHILD_ORDER = ('DocumentSettings', 'Colors', 'FaceNames', 'StyleSheets')
+
+
+def _validate_content_types(content_types):
+    errors = []
+    overrides = {
+        node.get('PartName'): node.get('ContentType')
+        for node in content_types
+        if node.tag == CT('Override')
+    }
+    for part, expected in REQUIRED_CONTENT_TYPES:
+        actual = overrides.get(part)
+        if actual is None:
+            errors.append('[Content_Types].xml missing override for %s' % part)
+        elif actual != expected:
+            errors.append(
+                '[Content_Types].xml override %s has content type %r, '
+                'expected %r' % (part, actual, expected)
+            )
+    return errors
+
+
+def _validate_root_relationships(root_rels):
+    errors = []
+    rels = {node.get('Id'): node for node in root_rels}
+    for rid, expected_type, expected_target in REQUIRED_ROOT_RELATIONSHIPS:
+        rel = rels.get(rid)
+        if rel is None:
+            errors.append('_rels/.rels missing relationship %s' % rid)
+            continue
+        actual_type = rel.get('Type')
+        if actual_type != expected_type:
+            errors.append(
+                '_rels/.rels %s type is %r, expected %r'
+                % (rid, actual_type, expected_type)
+            )
+        actual_target = rel.get('Target')
+        if actual_target != expected_target:
+            errors.append(
+                '_rels/.rels %s target is %r, expected %r'
+                % (rid, actual_target, expected_target)
+            )
+    return errors
+
+
+def _validate_document_relationships(document_rels):
+    errors = []
+    rels = {node.get('Id'): node for node in document_rels}
+    for rid, expected_type, expected_target in REQUIRED_DOCUMENT_RELATIONSHIPS:
+        rel = rels.get(rid)
+        if rel is None:
+            errors.append(
+                'visio/_rels/document.xml.rels missing relationship %s' % rid
+            )
+            continue
+        actual_type = rel.get('Type')
+        if actual_type != expected_type:
+            errors.append(
+                'visio/_rels/document.xml.rels %s type is %r, expected %r'
+                % (rid, actual_type, expected_type)
+            )
+        actual_target = rel.get('Target')
+        if actual_target != expected_target:
+            errors.append(
+                'visio/_rels/document.xml.rels %s target is %r, expected %r'
+                % (rid, actual_target, expected_target)
+            )
+    return errors
+
+
+def _validate_windows_contract(windows):
+    errors = []
+    if windows.tag != V('Windows'):
+        errors.append(
+            'visio/windows.xml root is %r, expected Windows'
+            % windows.tag
+        )
+        return errors
+    window = windows.find(V('Window'))
+    if window is None:
+        errors.append('visio/windows.xml has no Window element')
+    else:
+        if window.get('WindowType') != 'Drawing':
+            errors.append(
+                'visio/windows.xml WindowType is %r, expected Drawing'
+                % window.get('WindowType')
+            )
+        if window.get('ID') is None:
+            errors.append('visio/windows.xml Window is missing ID')
+    return errors
+
+
+def _validate_document_contract(document):
+    errors = []
+    names = [child.tag.rsplit('}', 1)[-1] for child in document]
+    if names != list(DOCUMENT_CHILD_ORDER):
+        errors.append(
+            'visio/document.xml child order is %s, expected %s'
+            % (names, list(DOCUMENT_CHILD_ORDER))
+        )
+    settings = document.find(V('DocumentSettings'))
+    if settings is None:
+        errors.append('visio/document.xml missing DocumentSettings')
+    else:
+        for attr, expected in DOCUMENT_SETTING_ATTRIBUTES.items():
+            actual = settings.get(attr)
+            if actual != expected:
+                errors.append(
+                    'DocumentSettings %s is %r, expected %r'
+                    % (attr, actual, expected)
+                )
+        children = [
+            (child.tag.rsplit('}', 1)[-1], child.text)
+            for child in settings
+        ]
+        if children != list(DOCUMENT_SETTING_CHILDREN):
+            errors.append(
+                'DocumentSettings children are %r, expected %r'
+                % (children, list(DOCUMENT_SETTING_CHILDREN))
+            )
+    faces = [face.get('NameU') for face in document.findall('.//' + V('FaceName'))]
+    if faces != FONTS:
+        errors.append(
+            'FaceNames must be %s in order, got %s' % (FONTS, faces)
+        )
+    for face in document.findall('.//' + V('FaceName')):
+        if sorted(face.attrib) != ['NameU']:
+            errors.append(
+                'FaceName %r must carry only the NameU attribute, got %r'
+                % (face.get('NameU'), sorted(face.attrib))
+            )
+    styles = document.findall('.//' + V('StyleSheet'))
+    style_ids = [
+        (style.get('ID'), style.get('Name'), style.get('NameU'))
+        for style in styles
+    ]
+    if style_ids != [('0', 'No Style', 'No Style'), ('1', 'Basic', 'Basic')]:
+        errors.append(
+            'StyleSheet ID/Name/NameU values are %r, expected '
+            "[('0', 'No Style', 'No Style'), ('1', 'Basic', 'Basic')]"
+            % style_ids
+        )
+    for style in styles:
+        sid = style.get('ID')
+        direct = {
+            cell.get('N'): cell.get('V')
+            for cell in style.findall(V('Cell'))
+        }
+        if direct != dict(STYLE_CELLS):
+            errors.append(
+                'StyleSheet %s cells are %r, expected %r'
+                % (sid, direct, dict(STYLE_CELLS))
+            )
+        sections = {sec.get('N'): sec for sec in style.findall(V('Section'))}
+        if set(sections) != {'Character', 'Paragraph'}:
+            errors.append(
+                'StyleSheet %s sections are %r, expected Character/Paragraph'
+                % (sid, sorted(sections))
+            )
+        else:
+            for sec_name, expected_cells in (
+                    ('Character', dict(STYLE_CHARACTER_CELLS)),
+                    ('Paragraph', dict(STYLE_PARAGRAPH_CELLS))):
+                cells = {
+                    cell.get('N'): cell.get('V')
+                    for row in sections[sec_name].findall(V('Row'))
+                    for cell in row.findall(V('Cell'))
+                }
+                if cells != expected_cells:
+                    errors.append(
+                        'StyleSheet %s %s cells are %r, expected %r'
+                        % (sid, sec_name, cells, expected_cells)
+                    )
+    return errors
+
+
+def _validate_page_index_contract(pages):
+    errors = []
+    page = pages.find('.//' + V('Page'))
+    if page is None:
+        errors.append('pages.xml has no Page element')
+        return errors
+    sheet = page.find('.//' + V('PageSheet'))
+    if sheet is None:
+        errors.append('pages.xml PageSheet is missing')
+        return errors
+    cells = {
+        cell.get('N'): cell
+        for cell in sheet.findall(V('Cell'))
+    }
+    for need in ('PageWidth', 'PageHeight'):
+        if need not in cells:
+            errors.append('PageSheet missing %s cell' % need)
+    if 'PageWidth' in cells and 'PageHeight' in cells:
+        try:
+            expected_x = _fmt(float(cells['PageWidth'].get('V')) / 2.0)
+            expected_y = _fmt(float(cells['PageHeight'].get('V')) / 2.0)
+        except (TypeError, ValueError):
+            errors.append('PageSheet PageWidth/PageHeight must be numbers')
+        else:
+            for attr, expected in (
+                    ('ViewCenterX', expected_x), ('ViewCenterY', expected_y)):
+                actual = page.get(attr)
+                if actual != expected:
+                    errors.append(
+                        'Page %s is %r, expected %r' % (attr, actual, expected)
+                    )
+    if page.get('ViewScale') != '1':
+        errors.append(
+            'Page ViewScale is %r, expected "1"' % page.get('ViewScale')
+        )
+    for name, expected in PAGE_CELLS:
+        cell = cells.get(name)
+        if cell is None:
+            errors.append('PageSheet missing %s cell' % name)
+        elif cell.get('V') != expected:
+            errors.append(
+                'PageSheet %s is %r, expected %r'
+                % (name, cell.get('V'), expected)
+            )
+    for name, cell in cells.items():
+        unit = cell.get('U')
+        if name in PAGE_POINT_UNIT_CELLS:
+            if unit != 'PT':
+                errors.append(
+                    'PageSheet %s U is %r, expected PT' % (name, unit)
+                )
+        elif unit is not None:
+            errors.append(
+                'PageSheet %s has unexpected U=%r' % (name, unit)
+            )
+    return errors
+
+
+def _validate_character_fonts(page, declared_fonts):
+    errors = []
+    declared = set(declared_fonts)
+    for cell in page.findall('.//' + V('Cell')):
+        if cell.get('N') != 'Font':
+            continue
+        value = cell.get('V')
+        if value not in declared:
+            errors.append(
+                'Character Font references undeclared font %r '
+                '(declared: %s)' % (value, '/'.join(declared_fonts))
+            )
+    return errors
 
 
 def validate(out_path, expected_connector_count=None,
@@ -1614,6 +2012,42 @@ def validate(out_path, expected_connector_count=None,
                 if rel.get('Target') == 'page1.xml' and \
                         not rel.get('Type', '').endswith('/page'):
                     errors.append('pages.xml.rels type must end with /page')
+        if '[Content_Types].xml' in parsed_parts:
+            errors.extend(_validate_content_types(
+                parsed_parts['[Content_Types].xml']
+            ))
+        if '_rels/.rels' in parsed_parts:
+            errors.extend(_validate_root_relationships(
+                parsed_parts['_rels/.rels']
+            ))
+        if 'visio/_rels/document.xml.rels' in parsed_parts:
+            errors.extend(_validate_document_relationships(
+                parsed_parts['visio/_rels/document.xml.rels']
+            ))
+        if 'visio/windows.xml' in parsed_parts:
+            errors.extend(_validate_windows_contract(
+                parsed_parts['visio/windows.xml']
+            ))
+        if 'visio/document.xml' in parsed_parts:
+            errors.extend(_validate_document_contract(
+                parsed_parts['visio/document.xml']
+            ))
+        if 'visio/pages/pages.xml' in parsed_parts:
+            errors.extend(_validate_page_index_contract(
+                parsed_parts['visio/pages/pages.xml']
+            ))
+        declared_fonts = None
+        if 'visio/document.xml' in parsed_parts:
+            declared_fonts = [
+                face.get('NameU')
+                for face in parsed_parts['visio/document.xml'].findall(
+                    './/' + V('FaceName')
+                )
+            ]
+        if 'visio/pages/page1.xml' in parsed_parts and declared_fonts is not None:
+            errors.extend(_validate_character_fonts(
+                parsed_parts['visio/pages/page1.xml'], declared_fonts
+            ))
         # PageSheet must carry PageWidth/PageHeight for coordinate conversion
         if 'visio/pages/pages.xml' in parsed_parts:
             pages = parsed_parts['visio/pages/pages.xml']

@@ -946,7 +946,9 @@ class OutputSafetyTests(unittest.TestCase):
         "[Content_Types].xml",
         "_rels/.rels",
         "docProps/core.xml",
+        "docProps/app.xml",
         "visio/document.xml",
+        "visio/windows.xml",
         "visio/_rels/document.xml.rels",
         "visio/pages/pages.xml",
         "visio/pages/_rels/pages.xml.rels",
@@ -1330,6 +1332,581 @@ class OutputSafetyTests(unittest.TestCase):
             self.assertEqual(validated_path.parent.resolve(), output.parent.resolve())
             self.assertFalse(validated_path.exists())
             self.assertEqual({path.name for path in temp.iterdir()}, {input_path.name, output.name})
+
+
+NS_EP = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+
+
+class VisioCompatibilityTests(unittest.TestCase):
+    """Package and document contract required for Microsoft Visio to open files."""
+
+    @staticmethod
+    def generated_package(directory, data=None, name="visio-compatible.vsdx"):
+        output = Path(directory) / name
+        vsdx_gen.generate(data or OutputSafetyTests.valid_data(), output)
+        return output
+
+    def test_extended_properties_part_and_relationship_chain(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            with zipfile.ZipFile(output) as package:
+                self.assertIn("docProps/app.xml", package.namelist())
+                app = ET.fromstring(package.read("docProps/app.xml"))
+                content_types = ET.fromstring(package.read("[Content_Types].xml"))
+                root_rels = ET.fromstring(package.read("_rels/.rels"))
+
+            self.assertEqual(app.tag, "{%s}Properties" % NS_EP)
+            self.assertEqual(app.find("{%s}Application" % NS_EP).text, "vsdx-gen")
+
+            overrides = {
+                node.get("PartName"): node.get("ContentType")
+                for node in content_types
+                if node.tag == vsdx_gen.CT("Override")
+            }
+            self.assertEqual(
+                overrides["/docProps/app.xml"],
+                "application/vnd.openxmlformats-officedocument.extended-properties+xml",
+            )
+            rels = {
+                node.get("Id"): (node.get("Type"), node.get("Target"))
+                for node in root_rels
+            }
+            self.assertEqual(
+                rels["rId3"],
+                (
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties",
+                    "docProps/app.xml",
+                ),
+            )
+
+    def test_document_skeleton_matches_visio_contract(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            with zipfile.ZipFile(output) as package:
+                document = ET.fromstring(package.read("visio/document.xml"))
+
+        self.assertEqual(
+            [child.tag.rsplit("}", 1)[-1] for child in document],
+            ["DocumentSettings", "Colors", "FaceNames", "StyleSheets"],
+        )
+        settings = document.find(vsdx_gen.V("DocumentSettings"))
+        self.assertEqual(
+            settings.attrib,
+            {
+                "TopPage": "0",
+                "DefaultTextStyle": "0",
+                "DefaultLineStyle": "0",
+                "DefaultFillStyle": "0",
+                "DefaultGuideStyle": "0",
+            },
+        )
+        self.assertEqual(
+            {child.tag.rsplit("}", 1)[-1]: child.text for child in settings},
+            {"GlueSettings": "9", "SnapSettings": "65847", "DynamicGridEnabled": "1"},
+        )
+        faces = document.findall(".//" + vsdx_gen.V("FaceName"))
+        self.assertEqual([face.get("NameU") for face in faces], vsdx_gen.FONTS)
+        for face in faces:
+            self.assertEqual(dict(face.attrib), {"NameU": face.get("NameU")})
+
+        styles = document.findall(".//" + vsdx_gen.V("StyleSheet"))
+        self.assertEqual(
+            [
+                (style.get("ID"), style.get("Name"), style.get("NameU"))
+                for style in styles
+            ],
+            [("0", "No Style", "No Style"), ("1", "Basic", "Basic")],
+        )
+        expected_cells = {
+            "EnableLineProps": "1", "EnableFillProps": "1", "EnableTextProps": "1",
+            "LineWeight": "0.01", "LineColor": "#000000", "LinePattern": "1",
+            "LineCap": "0", "BeginArrow": "0", "EndArrow": "0",
+            "BeginArrowSize": "2", "EndArrowSize": "2",
+            "FillForegnd": "#FFFFFF", "FillBkgnd": "#FFFFFF", "FillPattern": "1",
+            "ShdwPattern": "0", "ShapeShdwShow": "0", "VerticalAlign": "1",
+            "LeftMargin": "0.04", "RightMargin": "0.04",
+            "TopMargin": "0.04", "BottomMargin": "0.04",
+        }
+        for style in styles:
+            with self.subTest(style_id=style.get("ID")):
+                direct = {
+                    cell.get("N"): cell.get("V")
+                    for cell in style.findall(vsdx_gen.V("Cell"))
+                }
+                self.assertEqual(direct, expected_cells)
+                sections = style.findall(vsdx_gen.V("Section"))
+                self.assertEqual(
+                    {section.get("N") for section in sections},
+                    {"Character", "Paragraph"},
+                )
+                for section in sections:
+                    cells = {
+                        cell.get("N"): cell.get("V")
+                        for row in section.findall(vsdx_gen.V("Row"))
+                        for cell in row.findall(vsdx_gen.V("Cell"))
+                    }
+                    if section.get("N") == "Character":
+                        self.assertEqual(
+                            cells,
+                            {
+                                "Font": "Arial",
+                                "Color": "#000000",
+                                "Style": "0",
+                                "Size": "0.1666666666666667",
+                                "AsianFont": "Microsoft YaHei",
+                                "LangID": "zh-CN",
+                            },
+                        )
+                    else:
+                        self.assertEqual(
+                            cells, {"HorzAlign": "1", "SpLine": "-1.2"}
+                        )
+
+    def test_character_fonts_use_declared_face_names(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for font in vsdx_gen.FONTS:
+                with self.subTest(font=font):
+                    nodes = [
+                        InputContractTests.node("A", fontFamily=font),
+                        InputContractTests.node("B", x=4, fontFamily=font),
+                    ]
+                    edges = [
+                        {
+                            "from": "A",
+                            "to": "B",
+                            "label": "edge",
+                            "fontFamily": font,
+                        }
+                    ]
+                    data = {
+                        "page": {"name": "Fonts", "width": 14, "height": 7},
+                        "nodes": nodes,
+                        "edges": edges,
+                    }
+                    output = Path(temp) / (
+                        "fonts-%s.vsdx" % font.replace(" ", "-")
+                    )
+                    vsdx_gen.generate(data, output)
+                    with zipfile.ZipFile(output) as package:
+                        page = ET.fromstring(package.read("visio/pages/page1.xml"))
+                        document = ET.fromstring(
+                            package.read("visio/document.xml")
+                        )
+
+                    declared = {
+                        face.get("NameU")
+                        for face in document.findall(".//" + vsdx_gen.V("FaceName"))
+                    }
+                    font_cells = [
+                        cell.get("V")
+                        for cell in page.findall(".//" + vsdx_gen.V("Cell"))
+                        if cell.get("N") == "Font"
+                    ]
+                    self.assertTrue(font_cells)
+                    for value in font_cells:
+                        self.assertEqual(value, font)
+                        self.assertIn(value, declared)
+                    for shape in page.findall(".//" + vsdx_gen.V("Shape")):
+                        self.assertEqual(shape.get("LineStyle"), "1")
+                        self.assertEqual(shape.get("FillStyle"), "1")
+                        self.assertEqual(shape.get("TextStyle"), "1")
+
+    def test_page_defaults_match_reference_template(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            data = {
+                "page": {"name": "Page", "width": 14, "height": 7},
+                "nodes": [InputContractTests.node("A")],
+                "edges": [],
+            }
+            output = self.generated_package(temp, data)
+            with zipfile.ZipFile(output) as package:
+                pages = ET.fromstring(package.read("visio/pages/pages.xml"))
+
+        page = pages.find(vsdx_gen.V("Page"))
+        self.assertEqual(
+            {key: page.get(key) for key in ("ViewScale", "ViewCenterX", "ViewCenterY")},
+            {"ViewScale": "1", "ViewCenterX": "7", "ViewCenterY": "3.5"},
+        )
+        sheet = page.find(vsdx_gen.V("PageSheet"))
+        cells = {
+            cell.get("N"): cell.get("V")
+            for cell in sheet.findall(vsdx_gen.V("Cell"))
+        }
+        self.assertEqual(cells["PageWidth"], "14")
+        self.assertEqual(cells["PageHeight"], "7")
+        self.assertNotIn("ShowPageBreaks", cells)
+        expected = {
+            "ShdwOffsetX": "0.125", "ShdwOffsetY": "-0.125",
+            "PageScale": "1", "DrawingScale": "1",
+            "DrawingSizeType": "0", "DrawingScaleType": "0", "InhibitSnap": "0",
+            "PageLockReplace": "0", "PageLockDuplicate": "0", "UIVisibility": "0",
+            "ShdwType": "0", "ShdwObliqueAngle": "0", "ShdwScaleFactor": "1",
+            "DrawingResizeType": "2", "PageShapeSplit": "1",
+            "PageLeftMargin": "0", "PageRightMargin": "0",
+            "PageTopMargin": "0", "PageBottomMargin": "0",
+            "PrintPageOrientation": "2",
+        }
+        self.assertEqual(
+            cells,
+            dict(PageWidth="14", PageHeight="7", **expected),
+        )
+        unit_cells = {
+            cell.get("N"): cell.get("U")
+            for cell in sheet.findall(vsdx_gen.V("Cell"))
+            if cell.get("U") is not None
+        }
+        self.assertEqual(
+            unit_cells, {"PageScale": "PT", "DrawingScale": "PT"}
+        )
+
+    @staticmethod
+    def mutate_package(package_path, omit=None, xml_mutators=None):
+        """Copy a VSDX with parts omitted or XML parts mutated; return new path."""
+        target = package_path.with_name(package_path.stem + "-mutated.vsdx")
+        omit = set(omit or ())
+        with zipfile.ZipFile(package_path) as source:
+            infos = source.infolist()
+            blobs = {info.filename: source.read(info) for info in infos}
+        for part, mutator in (xml_mutators or {}).items():
+            root = ET.fromstring(blobs[part])
+            mutator(root)
+            blobs[part] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        with zipfile.ZipFile(target, "w") as archive:
+            for info in infos:
+                if info.filename in omit:
+                    continue
+                archive.writestr(info, blobs[info.filename])
+        return target
+
+    def test_validate_rejects_broken_extended_properties_contract(self):
+        def remove_app_override(root):
+            root.remove(
+                next(
+                    node
+                    for node in root
+                    if node.get("PartName") == "/docProps/app.xml"
+                )
+            )
+
+        def remove_r_id3(root):
+            root.remove(next(node for node in root if node.get("Id") == "rId3"))
+
+        def change_r_id3_type(root):
+            next(
+                node for node in root if node.get("Id") == "rId3"
+            ).set("Type", "http://example.com/wrong")
+
+        def change_r_id3_target(root):
+            next(
+                node for node in root if node.get("Id") == "rId3"
+            ).set("Target", "docProps/other.xml")
+
+        cases = (
+            (
+                "override-removed",
+                {"[Content_Types].xml": remove_app_override},
+                "[Content_Types].xml",
+                "docProps/app.xml",
+            ),
+            (
+                "rId3-removed",
+                {"_rels/.rels": remove_r_id3},
+                "_rels/.rels",
+                "rId3",
+            ),
+            (
+                "rId3-type",
+                {"_rels/.rels": change_r_id3_type},
+                "_rels/.rels",
+                "rId3",
+            ),
+            (
+                "rId3-target",
+                {"_rels/.rels": change_r_id3_target},
+                "_rels/.rels",
+                "rId3",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, xml_mutators, part, subject in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(
+                        temp, name="app-" + name + ".vsdx"
+                    )
+                    mutated = self.mutate_package(
+                        output, xml_mutators=xml_mutators
+                    )
+                    errors = vsdx_gen.validate(mutated)
+                    self.assertTrue(any(part in error for error in errors), errors)
+                    self.assertTrue(any(subject in error for error in errors), errors)
+
+    def test_validate_rejects_broken_document_contract(self):
+        document = "visio/document.xml"
+
+        def remove_glue(root):
+            settings = root.find(vsdx_gen.V("DocumentSettings"))
+            settings.remove(
+                next(
+                    child
+                    for child in settings
+                    if child.tag.rsplit("}", 1)[-1] == "GlueSettings"
+                )
+            )
+
+        def change_glue(root):
+            next(
+                child
+                for child in root.find(vsdx_gen.V("DocumentSettings"))
+                if child.tag.rsplit("}", 1)[-1] == "GlueSettings"
+            ).text = "8"
+
+        def insert_event_list(root):
+            root.append(vsdx_gen._el(vsdx_gen.V("EventList")))
+
+        def move_face_names_first(root):
+            faces = root.find(vsdx_gen.V("FaceNames"))
+            root.remove(faces)
+            root.insert(0, faces)
+
+        cases = (
+            (
+                "glue-removed",
+                remove_glue,
+                "GlueSettings",
+            ),
+            (
+                "glue-changed",
+                change_glue,
+                "GlueSettings",
+            ),
+            (
+                "event-list",
+                insert_event_list,
+                "EventList",
+            ),
+            (
+                "face-names-first",
+                move_face_names_first,
+                "child order",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, mutator, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(
+                        temp, name="doc-" + name + ".vsdx"
+                    )
+                    mutated = self.mutate_package(
+                        output, xml_mutators={document: mutator}
+                    )
+                    errors = vsdx_gen.validate(mutated)
+                    self.assertTrue(
+                        any(expected in error for error in errors), errors
+                    )
+
+    def test_validate_rejects_unresolved_fonts_and_styles(self):
+        document = "visio/document.xml"
+
+        def remove_face(root):
+            root.find(vsdx_gen.V("FaceNames")).remove(
+                next(
+                    face
+                    for face in root.findall(".//" + vsdx_gen.V("FaceName"))
+                    if face.get("NameU") == "Microsoft YaHei"
+                )
+            )
+
+        def remove_style(root):
+            root.find(vsdx_gen.V("StyleSheets")).remove(
+                next(
+                    style
+                    for style in root.findall(".//" + vsdx_gen.V("StyleSheet"))
+                    if style.get("ID") == "1"
+                )
+            )
+
+        def change_style_name(root):
+            next(
+                style
+                for style in root.findall(".//" + vsdx_gen.V("StyleSheet"))
+                if style.get("ID") == "1"
+            ).set("NameU", "Wrong")
+
+        def remove_enable_text_props(root):
+            style = next(
+                style
+                for style in root.findall(".//" + vsdx_gen.V("StyleSheet"))
+                if style.get("ID") == "1"
+            )
+            style.remove(
+                next(
+                    cell
+                    for cell in style.findall(vsdx_gen.V("Cell"))
+                    if cell.get("N") == "EnableTextProps"
+                )
+            )
+
+        def change_page_font(root):
+            next(
+                cell
+                for cell in root.findall(".//" + vsdx_gen.V("Cell"))
+                if cell.get("N") == "Font"
+            ).set("V", "Missing Font")
+
+        cases = (
+            (
+                "face-removed",
+                {document: remove_face},
+                "Microsoft YaHei",
+            ),
+            (
+                "style-removed",
+                {document: remove_style},
+                "Basic",
+            ),
+            (
+                "style-name-changed",
+                {document: change_style_name},
+                "NameU",
+            ),
+            (
+                "enable-text-removed",
+                {document: remove_enable_text_props},
+                "EnableTextProps",
+            ),
+            (
+                "font-missing",
+                {"visio/pages/page1.xml": change_page_font},
+                "Missing Font",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, xml_mutators, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(
+                        temp, name="style-" + name + ".vsdx"
+                    )
+                    mutated = self.mutate_package(
+                        output, xml_mutators=xml_mutators
+                    )
+                    errors = vsdx_gen.validate(mutated)
+                    self.assertTrue(
+                        any(expected in error for error in errors), errors
+                    )
+
+    def test_validate_rejects_broken_page_defaults(self):
+        pages = "visio/pages/pages.xml"
+        page_sheet = ".//" + vsdx_gen.V("PageSheet")
+
+        def remove_view_center_x(root):
+            root.find(".//" + vsdx_gen.V("Page")).attrib.pop("ViewCenterX")
+
+        def change_drawing_size_type(root):
+            next(
+                cell
+                for cell in root.find(page_sheet).findall(vsdx_gen.V("Cell"))
+                if cell.get("N") == "DrawingSizeType"
+            ).set("V", "3")
+
+        def remove_page_scale_unit(root):
+            next(
+                cell
+                for cell in root.find(page_sheet).findall(vsdx_gen.V("Cell"))
+                if cell.get("N") == "PageScale"
+            ).attrib.pop("U")
+
+        cases = (
+            (
+                "view-center-x-removed",
+                remove_view_center_x,
+                "ViewCenterX",
+            ),
+            (
+                "drawing-size-type",
+                change_drawing_size_type,
+                "DrawingSizeType",
+            ),
+            (
+                "page-scale-unit",
+                remove_page_scale_unit,
+                "PageScale",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, mutator, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(
+                        temp, name="page-" + name + ".vsdx"
+                    )
+                    mutated = self.mutate_package(
+                        output, xml_mutators={pages: mutator}
+                    )
+                    errors = vsdx_gen.validate(mutated)
+                    self.assertTrue(
+                        any(expected in error for error in errors), errors
+                    )
+
+    def test_windows_part_and_relationship_chain(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            with zipfile.ZipFile(output) as package:
+                self.assertIn("visio/windows.xml", package.namelist())
+                windows = ET.fromstring(package.read("visio/windows.xml"))
+                content_types = ET.fromstring(package.read("[Content_Types].xml"))
+                document_rels = ET.fromstring(
+                    package.read("visio/_rels/document.xml.rels")
+                )
+
+        self.assertEqual(windows.tag, vsdx_gen.V("Windows"))
+        window = windows.find(vsdx_gen.V("Window"))
+        self.assertIsNotNone(window)
+        self.assertEqual(window.get("WindowType"), "Drawing")
+        overrides = {
+            node.get("PartName"): node.get("ContentType")
+            for node in content_types
+            if node.tag == vsdx_gen.CT("Override")
+        }
+        self.assertEqual(
+            overrides["/visio/windows.xml"],
+            "application/vnd.ms-visio.windows+xml",
+        )
+        rels = {
+            node.get("Id"): (node.get("Type"), node.get("Target"))
+            for node in document_rels
+        }
+        self.assertEqual(
+            rels["rId2"],
+            (
+                "http://schemas.microsoft.com/visio/2010/relationships/windows",
+                "windows.xml",
+            ),
+        )
+
+    def test_validate_rejects_missing_windows_part(self):
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            mutated = self.mutate_package(output, omit={"visio/windows.xml"})
+            errors = vsdx_gen.validate(mutated)
+        self.assertTrue(any("visio/windows.xml" in error for error in errors))
+
+    def test_validate_rejects_broken_windows_relationship(self):
+        def change_windows_type(root):
+            next(
+                node
+                for node in root
+                if node.get("Id") == "rId2"
+            ).set("Type", "http://example.invalid/windows")
+
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            mutated = self.mutate_package(
+                output,
+                xml_mutators={
+                    "visio/_rels/document.xml.rels": change_windows_type,
+                },
+            )
+            errors = vsdx_gen.validate(mutated)
+        self.assertTrue(any("windows" in error for error in errors))
 
 
 class EdgeSemanticsTests(unittest.TestCase):
