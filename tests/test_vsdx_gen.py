@@ -1908,6 +1908,73 @@ class VisioCompatibilityTests(unittest.TestCase):
             errors = vsdx_gen.validate(mutated)
         self.assertTrue(any("windows" in error for error in errors))
 
+    def test_connectors_carry_visio_one_d_cells(self):
+        data = {
+            "nodes": [
+                InputContractTests.node("A", x=2.0, y=6.0),
+                InputContractTests.node("B", x=6.0, y=2.0),
+            ],
+            "edges": [{"from": "A", "to": "B", "label": "next"}],
+        }
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp, data)
+            with zipfile.ZipFile(output) as package:
+                page = ET.fromstring(package.read("visio/pages/page1.xml"))
+
+        connector = next(
+            shape for shape in page.findall(".//" + vsdx_gen.V("Shape"))
+            if shape.find(vsdx_gen.V("Cell") + "[@N='BeginX']") is not None
+        )
+        cells = {
+            cell.get("N"): cell
+            for cell in connector.findall(vsdx_gen.V("Cell"))
+        }
+        expected_formulas = {
+            "PinX": "(BeginX+EndX)*0.5",
+            "PinY": "(BeginY+EndY)*0.5",
+            "Width": "EndX-BeginX",
+            "Height": "EndY-BeginY",
+            "LocPinX": "(EndX-BeginX)/2",
+            "LocPinY": "(EndY-BeginY)/2",
+        }
+        for name, formula in expected_formulas.items():
+            with self.subTest(cell=name):
+                self.assertIn(name, cells)
+                self.assertEqual(cells[name].get("F"), formula)
+                self.assertIsNotNone(cells[name].get("V"))
+        for name, expected in (
+                ("GlueType", "2"), ("ConFixedCode", "3"),
+                ("DynFeedback", "2"), ("NoLiveDynamics", "1"),
+                ("ConLineRouteExt", "1"), ("ShapeRouteStyle", "16"),
+                ("ObjType", "2"), ("NoAlignBox", "1"),
+                ("ShapeSplittable", "1"), ("IsTextEditTarget", "0"),
+                ("DontMoveChildren", "0"), ("FillPattern", "0")):
+            with self.subTest(cell=name):
+                self.assertIn(name, cells)
+                self.assertEqual(cells[name].get("V"), expected)
+        self.assertIn("BegTrigger", cells)
+        self.assertIn("_XFTRIGGER(Sheet.1!EventXFMod)",
+                      cells["BegTrigger"].get("F", ""))
+        self.assertIn("EndTrigger", cells)
+        self.assertIn("_XFTRIGGER(Sheet.2!EventXFMod)",
+                      cells["EndTrigger"].get("F", ""))
+
+    def test_validate_rejects_connector_without_one_d_cells(self):
+        def remove_obj_type(root):
+            for shape in root.findall(".//" + vsdx_gen.V("Shape")):
+                for cell in shape.findall(vsdx_gen.V("Cell")):
+                    if cell.get("N") == "ObjType":
+                        shape.remove(cell)
+
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = self.generated_package(temp)
+            mutated = self.mutate_package(
+                output,
+                xml_mutators={"visio/pages/page1.xml": remove_obj_type},
+            )
+            errors = vsdx_gen.validate(mutated)
+        self.assertTrue(any("ObjType" in error for error in errors))
+
 
 class EdgeSemanticsTests(unittest.TestCase):
     """Connector anchors, geometry paths, glue records, and validation."""
@@ -2063,6 +2130,25 @@ class EdgeSemanticsTests(unittest.TestCase):
         self.assertEqual(self.cell_value(connector, "TxtPinY"), 2.0)
         for cell_name in ("TxtLocPinX", "TxtLocPinY", "TxtWidth", "TxtHeight"):
             self.assertEqual(self.cell_value(connector, cell_name), 0.0)
+
+    def test_connector_label_pin_is_relative_to_begin_for_diagonal_edge(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B", "label": "diagonal"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+
+        # Begin is A's right edge (1.5, 1.0); polyline midpoint is (3.0, 2.0).
+        # The text pin must be relative to Begin so both Visio's 1D local
+        # coordinates and draw.io's edge-label offset formula place the label
+        # at the polyline midpoint.
+        self.assertEqual(self.cell_value(connector, "TxtPinX"), 1.5)
+        self.assertEqual(self.cell_value(connector, "TxtPinY"), 1.0)
 
     def test_explicit_source_and_target_sides_independently_override_defaults(self):
         anchors = {

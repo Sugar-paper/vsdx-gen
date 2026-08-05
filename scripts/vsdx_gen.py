@@ -151,6 +151,12 @@ def _cell(name, value):
     return _el(V('Cell'), N=name, V=value)
 
 
+def _cell_formula(name, value, formula):
+    if isinstance(value, float):
+        value = round(value, 4)
+    return _el(V('Cell'), N=name, V=value, F=formula)
+
+
 _HEX_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
 
 
@@ -980,6 +986,29 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
     shape.append(_cell('BeginY', by))
     shape.append(_cell('EndX', ex))
     shape.append(_cell('EndY', ey))
+    shape.append(_cell_formula('PinX', (bx + ex) / 2.0, '(BeginX+EndX)*0.5'))
+    shape.append(_cell_formula('PinY', (by + ey) / 2.0, '(BeginY+EndY)*0.5'))
+    shape.append(_cell_formula('Width', ex - bx, 'EndX-BeginX'))
+    shape.append(_cell_formula('Height', ey - by, 'EndY-BeginY'))
+    shape.append(_cell_formula('LocPinX', (ex - bx) / 2.0, '(EndX-BeginX)/2'))
+    shape.append(_cell_formula('LocPinY', (ey - by) / 2.0, '(EndY-BeginY)/2'))
+    shape.append(_cell('Angle', 0))
+    shape.append(_cell('FlipX', 0))
+    shape.append(_cell('FlipY', 0))
+    shape.append(_cell_formula(
+        'BegTrigger', 2, '_XFTRIGGER(Sheet.%d!EventXFMod)' % source_sid
+    ))
+    shape.append(_cell_formula(
+        'EndTrigger', 2, '_XFTRIGGER(Sheet.%d!EventXFMod)' % target_sid
+    ))
+    for cname, cval in (
+            ('GlueType', 2), ('ConFixedCode', 3), ('DynFeedback', 2),
+            ('NoLiveDynamics', 1), ('ConLineRouteExt', 1),
+            ('ShapeRouteStyle', 16), ('FillPattern', 0),
+            ('ObjType', 2), ('NoAlignBox', 1), ('ShapeSplittable', 1),
+            ('IsTextEditTarget', 0), ('DontMoveChildren', 0),
+            ('LockMoveX', 0)):
+        shape.append(_cell(cname, cval))
     shape.append(_cell('BeginArrow', ARROWS.get(e.get('startArrow', 'none'), 0)))
     shape.append(_cell('EndArrow', ARROWS.get(e.get('endArrow', 'block'), 4)))
     shape.append(_cell('LinePattern', 2 if e.get('dashed') else 1))
@@ -1014,7 +1043,7 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
         label_point = _polyline_midpoint([(bx, by)] + pts + [(ex, ey)])
         shape.append(_cell('TxtPinX', round(label_point[0] - bx, 4)))
         shape.append(_cell(
-            'TxtPinY', round(label_point[1] - (by + ey) / 2.0, 4)
+            'TxtPinY', round(label_point[1] - by, 4)
         ))
         for cell_name in ('TxtLocPinX', 'TxtLocPinY', 'TxtWidth', 'TxtHeight'):
             shape.append(_cell(cell_name, 0))
@@ -1970,6 +1999,62 @@ def _validate_character_fonts(page, declared_fonts):
     return errors
 
 
+CONNECTOR_REQUIRED_CELLS = (
+    ('PinX', 'F', '(BeginX+EndX)*0.5'),
+    ('PinY', 'F', '(BeginY+EndY)*0.5'),
+    ('Width', 'F', 'EndX-BeginX'),
+    ('Height', 'F', 'EndY-BeginY'),
+    ('LocPinX', 'F', '(EndX-BeginX)/2'),
+    ('LocPinY', 'F', '(EndY-BeginY)/2'),
+    ('GlueType', 'V', '2'),
+    ('ConFixedCode', 'V', '3'),
+    ('DynFeedback', 'V', '2'),
+    ('NoLiveDynamics', 'V', '1'),
+    ('ConLineRouteExt', 'V', '1'),
+    ('ShapeRouteStyle', 'V', '16'),
+    ('ObjType', 'V', '2'),
+    ('NoAlignBox', 'V', '1'),
+    ('ShapeSplittable', 'V', '1'),
+    ('IsTextEditTarget', 'V', '0'),
+    ('DontMoveChildren', 'V', '0'),
+)
+
+
+def _validate_connector_contract(page):
+    errors = []
+    for shape in page.findall('.//' + V('Shape')):
+        cells = {
+            cell.get('N'): cell
+            for cell in shape.findall(V('Cell'))
+        }
+        if 'BeginX' not in cells:
+            continue
+        sid = shape.get('ID')
+        for name, attr, expected in CONNECTOR_REQUIRED_CELLS:
+            cell = cells.get(name)
+            if cell is None:
+                errors.append(
+                    'connector %s is missing %s cell' % (sid, name)
+                )
+            elif cell.get(attr) != expected:
+                errors.append(
+                    'connector %s %s %s is %r, expected %r'
+                    % (sid, name, attr, cell.get(attr), expected)
+                )
+        for trigger in ('BegTrigger', 'EndTrigger'):
+            cell = cells.get(trigger)
+            if cell is None:
+                errors.append(
+                    'connector %s is missing %s cell' % (sid, trigger)
+                )
+            elif cell.get('V') != '2' or '_XFTRIGGER(' not in (cell.get('F') or ''):
+                errors.append(
+                    'connector %s %s must be V=2 with an _XFTRIGGER formula'
+                    % (sid, trigger)
+                )
+    return errors
+
+
 def validate(out_path, expected_connector_count=None,
              expected_connector_semantics=None):
     """Structural + semantic checks on the generated package."""
@@ -2047,6 +2132,10 @@ def validate(out_path, expected_connector_count=None,
         if 'visio/pages/page1.xml' in parsed_parts and declared_fonts is not None:
             errors.extend(_validate_character_fonts(
                 parsed_parts['visio/pages/page1.xml'], declared_fonts
+            ))
+        if 'visio/pages/page1.xml' in parsed_parts:
+            errors.extend(_validate_connector_contract(
+                parsed_parts['visio/pages/page1.xml']
             ))
         # PageSheet must carry PageWidth/PageHeight for coordinate conversion
         if 'visio/pages/pages.xml' in parsed_parts:
