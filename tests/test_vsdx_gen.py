@@ -559,7 +559,7 @@ class InputContractTests(unittest.TestCase):
 
     def test_validates_routing_field_values(self):
         nodes = [self.node("A"), self.node("B", x=4)]
-        for value in ("straight", "elbow"):
+        for value in ("auto", "straight", "elbow"):
             with self.subTest(routing=value):
                 data = self.valid_data(
                     nodes=nodes,
@@ -2227,7 +2227,7 @@ class EdgeSemanticsTests(unittest.TestCase):
             self.assertAlmostEqual(got[0], want[0], places=4)
             self.assertAlmostEqual(got[1], want[1], places=4)
 
-    def test_default_diagonal_edges_stay_straight(self):
+    def test_default_diagonal_edges_elbow_when_clear(self):
         page = self.page({
             "nodes": [
                 self.node("A", 1.0, 1.0, w=1.0, h=1.0),
@@ -2238,9 +2238,47 @@ class EdgeSemanticsTests(unittest.TestCase):
         connector = page.find(
             ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
         )
+        # Begin = A right edge (1.5, 1.0), end = B left edge (4.5, 3.0),
+        # from side = right -> horizontal first through X midpoint 3.0.
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (1.5, 0.0), (1.5, 2.0), (3.0, 2.0)],
+        )
+
+    def test_default_elbow_falls_back_to_straight_when_crossing(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+                self.node("C", 3.0, 2.0, w=1.5, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        # The Z path through X midpoint 3.0 would cross node C, so it falls
+        # back to a straight segment.
         self.assert_points_close(
             self.geometry_points(connector),
             [(0.0, 0.0), (3.0, 2.0)],
+        )
+
+    def test_routing_elbow_forces_waypoints_even_when_crossing(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+                self.node("C", 3.0, 2.0, w=1.5, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B", "routing": "elbow"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (1.5, 0.0), (1.5, 2.0), (3.0, 2.0)],
         )
 
     def test_aligned_edges_stay_straight(self):

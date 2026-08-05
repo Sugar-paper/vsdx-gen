@@ -111,7 +111,7 @@ description: Use when users need Mermaid, structured workflow or architecture de
 | lineColor / strokeWidth / dashed | 线样式 |
 | startArrow / endArrow | `none` `open` `block` `classic` `oval` `diamond` `blockThin` `dash`（默认 endArrow=block） |
 | points | 仅表示中间路由点 `[[x,y],...]`（英寸，页面坐标）；源/目标锚点由 `from`/`to` 和边自动生成 |
-| routing | `straight`（默认）/ `elbow`；`elbow` 让斜向边自动生成正交折线（水平/垂直对齐的边始终直线），显式 `points` 优先于 `routing` |
+| routing | `auto`（默认）/ `straight` / `elbow`；`auto` 让斜向边自动生成正交折线，若折线会穿过其他节点则退回直线；`straight` 强制直线；`elbow` 强制折线；水平/垂直对齐的边始终直线；显式 `points` 优先于 `routing` |
 
 ## Mermaid → JSON 转换规则（模型遵循；脚本不解析 Mermaid）
 

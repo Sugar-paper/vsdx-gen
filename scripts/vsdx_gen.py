@@ -541,8 +541,8 @@ def _validate_and_normalize(data):
             errors.append('%s fontFamily 必须是 %s'
                           % (prefix, '/'.join(FONTS)))
         if edge.get('routing') is not None and edge['routing'] not in (
-                'straight', 'elbow'):
-            errors.append('%s routing 必须是 straight/elbow' % prefix)
+                'auto', 'straight', 'elbow'):
+            errors.append('%s routing 必须是 auto/straight/elbow' % prefix)
         for key in ('lineColor', 'labelColor'):
             value = edge.get(key)
             if value is not None and (
@@ -936,9 +936,14 @@ def _resolve_edges(nodes, edges):
             dx = end[0] - begin[0]
             dy = end[1] - begin[1]
             diagonal = abs(dx) > 1e-6 and abs(dy) > 1e-6
-            routing = resolved_edge.get('routing', 'straight')
-            if diagonal and routing == 'elbow':
-                resolved_edge['points'] = _elbow_points(begin, end, source_side)
+            routing = resolved_edge.get('routing', 'auto')
+            if diagonal and routing != 'straight':
+                elbow = _elbow_points(begin, end, target_side)
+                forced = routing == 'elbow'
+                if forced or not _elbow_path_crosses_any(
+                        begin, elbow, end, nodes,
+                        {edge['from'], edge['to']}):
+                    resolved_edge['points'] = elbow
         resolved.append({
             'edge': resolved_edge,
             'connector_id': sid,
@@ -950,15 +955,75 @@ def _resolve_edges(nodes, edges):
     return resolved
 
 
-def _elbow_points(begin, end, from_side):
-    """Two orthogonal Z waypoints between a diagonal begin/end pair."""
+def _elbow_points(begin, end, target_side):
+    """Two orthogonal Z waypoints between a diagonal begin/end pair.
+
+    The final segment approaches the target perpendicular to its side, so a
+    top/bottom target ends vertically and a left/right target ends
+    horizontally.
+    """
     bx, by = begin
     ex, ey = end
-    if from_side in ('top', 'bottom'):
+    if target_side in ('top', 'bottom'):
         y_mid = (by + ey) / 2.0
         return [(bx, y_mid), (ex, y_mid)]
     x_mid = (bx + ex) / 2.0
     return [(x_mid, by), (x_mid, ey)]
+
+
+def _segment_intersects_box(p1, p2, box, eps=1e-6):
+    """True when segment p1->p2 touches the axis-aligned box."""
+    x1, y1 = p1
+    x2, y2 = p2
+    bx1, by1, bx2, by2 = box
+    if (max(x1, x2) < bx1 - eps or min(x1, x2) > bx2 + eps
+            or max(y1, y2) < by1 - eps or min(y1, y2) > by2 + eps):
+        return False
+
+    def cross(a, b, c):
+        return (
+            (b[0] - a[0]) * (c[1] - a[1])
+            - (b[1] - a[1]) * (c[0] - a[0])
+        )
+
+    def segments_cross(a, b, c, d):
+        d1 = cross(c, d, a)
+        d2 = cross(c, d, b)
+        d3 = cross(a, b, c)
+        d4 = cross(a, b, d)
+        return (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0)
+
+    edges = (
+        ((bx1, by1), (bx2, by1)), ((bx2, by1), (bx2, by2)),
+        ((bx2, by2), (bx1, by2)), ((bx1, by2), (bx1, by1)),
+    )
+    for e1, e2 in edges:
+        if segments_cross((x1, y1), (x2, y2), e1, e2):
+            return True
+    return (
+        bx1 - eps <= x1 <= bx2 + eps and by1 - eps <= y1 <= by2 + eps
+        and bx1 - eps <= x2 <= bx2 + eps and by1 - eps <= y2 <= by2 + eps
+    )
+
+
+def _elbow_path_crosses_any(begin, pts, end, nodes, exclude_ids):
+    """True when the elbow path touches any node other than the endpoints."""
+    path = [begin] + list(pts) + [end]
+    boxes = tuple(
+        (
+            node['id'],
+            (node['x'] - node['w'] / 2.0, node['y'] - node['h'] / 2.0,
+             node['x'] + node['w'] / 2.0, node['y'] + node['h'] / 2.0),
+        )
+        for node in nodes
+    )
+    for index in range(len(path) - 1):
+        for node_id, box in boxes:
+            if node_id in exclude_ids:
+                continue
+            if _segment_intersects_box(path[index], path[index + 1], box):
+                return True
+    return False
 
 
 def _expected_connector_semantics(resolved_edges):

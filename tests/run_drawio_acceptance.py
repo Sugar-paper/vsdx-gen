@@ -522,17 +522,21 @@ def assert_case_matches(data, diagram, tolerance=1.0):
             inches_to_drawio(tuple(point), page_height)
             for point in edge_data.get("points", [])
         ]
-        if len(route) != len(expected_route):
+        explicit_points = bool(edge_data.get("points"))
+        # Auto elbow routing may add waypoints to edges that declared none;
+        # strict waypoint comparison applies only to explicit points.
+        if explicit_points and len(route) != len(expected_route):
             raise AcceptanceError(
                 "edge %s waypoint count differs: expected %d, got %d"
                 % (edge_name, len(expected_route), len(route))
             )
-        for route_index, (actual, expected) in enumerate(
-                zip(route, expected_route), start=1):
-            _assert_point(
-                actual, expected, tolerance,
-                "edge %s waypoint %d" % (edge_name, route_index),
-            )
+        if explicit_points:
+            for route_index, (actual, expected) in enumerate(
+                    zip(route, expected_route), start=1):
+                _assert_point(
+                    actual, expected, tolerance,
+                    "edge %s waypoint %d" % (edge_name, route_index),
+                )
 
 
 def decode_stencil(style_value):
