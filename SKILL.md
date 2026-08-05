@@ -111,6 +111,7 @@ description: Use when users need Mermaid, structured workflow or architecture de
 | lineColor / strokeWidth / dashed | 线样式 |
 | startArrow / endArrow | `none` `open` `block` `classic` `oval` `diamond` `blockThin` `dash`（默认 endArrow=block） |
 | points | 仅表示中间路由点 `[[x,y],...]`（英寸，页面坐标）；源/目标锚点由 `from`/`to` 和边自动生成 |
+| routing | `straight`（默认）/ `elbow`；`elbow` 让斜向边自动生成正交折线（水平/垂直对齐的边始终直线），显式 `points` 优先于 `routing` |
 
 ## Mermaid → JSON 转换规则（模型遵循；脚本不解析 Mermaid）
 
@@ -217,7 +218,8 @@ python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>"
   重复 id、缺字段、非法颜色、坏几何等都会以中文错误信息失败退出（exit 2），
   绝不静默产出错误文件
 - **结构校验**：`validate()` 检查 zip 完整性、XML 格式、rels 目标存在、部件齐全、
-  页面关系类型、PageSheet 尺寸、形状 ID、连接端点和 `<Connects>` 语义
+  页面关系类型、PageSheet 尺寸、形状 ID、连接端点、颜色单元格（必须 `#RRGGBB`）、
+  连接线 1D 属性和 `<Connects>` 语义
 - **生成器退出码**：0=成功，1=生成包结构/语义校验失败，2=输入/参数/文件错误
 - **布局验证退出码**：0=通过，1=发现布局问题，2=参数/文件/XML 输入错误
 - **导入验证退出码**：0=通过，1=服务/浏览器/导入/导出/验证失败，2=参数/依赖/文件错误

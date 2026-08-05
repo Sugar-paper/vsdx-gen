@@ -137,7 +137,7 @@ _NODE_FIELDS = frozenset((
 _EDGE_FIELDS = frozenset((
     'id', 'from', 'to', 'label', 'fromSide', 'toSide', 'lineColor',
     'strokeWidth', 'dashed', 'startArrow', 'endArrow', 'fontFamily',
-    'fontSize', 'labelColor', 'points',
+    'fontSize', 'labelColor', 'points', 'routing',
 ))
 
 
@@ -540,6 +540,9 @@ def _validate_and_normalize(data):
         if edge.get('fontFamily') is not None and edge['fontFamily'] not in FONTS:
             errors.append('%s fontFamily 必须是 %s'
                           % (prefix, '/'.join(FONTS)))
+        if edge.get('routing') is not None and edge['routing'] not in (
+                'straight', 'elbow'):
+            errors.append('%s routing 必须是 straight/elbow' % prefix)
         for key in ('lineColor', 'labelColor'):
             value = edge.get(key)
             if value is not None and (
@@ -926,15 +929,36 @@ def _resolve_edges(nodes, edges):
         source_side, target_side = _default_sides(source, target)
         source_side = edge.get('fromSide', source_side)
         target_side = edge.get('toSide', target_side)
+        resolved_edge = dict(edge)
+        begin = _anchor(source, source_side)
+        end = _anchor(target, target_side)
+        if 'points' not in resolved_edge:
+            dx = end[0] - begin[0]
+            dy = end[1] - begin[1]
+            diagonal = abs(dx) > 1e-6 and abs(dy) > 1e-6
+            routing = resolved_edge.get('routing', 'straight')
+            if diagonal and routing == 'elbow':
+                resolved_edge['points'] = _elbow_points(begin, end, source_side)
         resolved.append({
-            'edge': edge,
+            'edge': resolved_edge,
             'connector_id': sid,
             'source_shape_id': node_shape_ids[edge['from']],
             'target_shape_id': node_shape_ids[edge['to']],
-            'begin': _anchor(source, source_side),
-            'end': _anchor(target, target_side),
+            'begin': begin,
+            'end': end,
         })
     return resolved
+
+
+def _elbow_points(begin, end, from_side):
+    """Two orthogonal Z waypoints between a diagonal begin/end pair."""
+    bx, by = begin
+    ex, ey = end
+    if from_side in ('top', 'bottom'):
+        y_mid = (by + ey) / 2.0
+        return [(bx, y_mid), (ex, y_mid)]
+    x_mid = (bx + ex) / 2.0
+    return [(x_mid, by), (x_mid, ey)]
 
 
 def _expected_connector_semantics(resolved_edges):

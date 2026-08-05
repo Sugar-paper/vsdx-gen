@@ -557,6 +557,24 @@ class InputContractTests(unittest.TestCase):
                 data = self.valid_data(nodes=[self.node("A", fontFamily=font), nodes[1]], edges=[edge])
                 self.assertEqual(vsdx_gen.validate_input(data), [])
 
+    def test_validates_routing_field_values(self):
+        nodes = [self.node("A"), self.node("B", x=4)]
+        for value in ("straight", "elbow"):
+            with self.subTest(routing=value):
+                data = self.valid_data(
+                    nodes=nodes,
+                    edges=[{"from": "A", "to": "B", "routing": value}],
+                )
+                self.assertEqual(vsdx_gen.validate_input(data), [])
+
+        errors = vsdx_gen.validate_input(
+            self.valid_data(
+                nodes=nodes,
+                edges=[{"from": "A", "to": "B", "routing": "zigzag"}],
+            )
+        )
+        self.assertTrue(any("routing" in error for error in errors))
+
     def test_accepts_only_documented_public_arrow_values(self):
         public_values = (
             "none", "open", "block", "classic", "oval", "diamond",
@@ -2188,6 +2206,109 @@ class EdgeSemanticsTests(unittest.TestCase):
         # at the polyline midpoint.
         self.assertEqual(self.cell_value(connector, "TxtPinX"), 1.5)
         self.assertEqual(self.cell_value(connector, "TxtPinY"), 1.0)
+
+    @staticmethod
+    def geometry_points(connector):
+        geometry = connector.find(
+            "%s[@N='Geometry']" % vsdx_gen.V("Section")
+        )
+        points = []
+        for row in geometry.findall(vsdx_gen.V("Row")):
+            cells = {
+                cell.get("N"): float(cell.get("V"))
+                for cell in row.findall(vsdx_gen.V("Cell"))
+            }
+            points.append((cells["X"], cells["Y"]))
+        return points
+
+    def assert_points_close(self, actual, expected):
+        self.assertEqual(len(actual), len(expected))
+        for got, want in zip(actual, expected):
+            self.assertAlmostEqual(got[0], want[0], places=4)
+            self.assertAlmostEqual(got[1], want[1], places=4)
+
+    def test_default_diagonal_edges_stay_straight(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (3.0, 2.0)],
+        )
+
+    def test_aligned_edges_stay_straight(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 1.0, w=1.0, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (3.0, 0.0)],
+        )
+
+    def test_routing_straight_overrides_auto_elbow(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B", "routing": "straight"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (3.0, 2.0)],
+        )
+
+    def test_routing_elbow_forces_waypoints_on_diagonal_edge(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+            ],
+            "edges": [{"from": "A", "to": "B", "routing": "elbow"}],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (1.5, 0.0), (1.5, 2.0), (3.0, 2.0)],
+        )
+
+    def test_explicit_points_are_not_overridden_by_routing(self):
+        page = self.page({
+            "nodes": [
+                self.node("A", 1.0, 1.0, w=1.0, h=1.0),
+                self.node("B", 5.0, 3.0, w=1.0, h=1.0),
+            ],
+            "edges": [{
+                "from": "A", "to": "B", "routing": "elbow",
+                "points": [[2.0, 2.0], [4.0, 2.0]],
+            }],
+        })
+        connector = page.find(
+            ".//%s[@NameU='Connector']" % vsdx_gen.V("Shape")
+        )
+        self.assert_points_close(
+            self.geometry_points(connector),
+            [(0.0, 0.0), (0.5, 1.0), (2.5, 1.0), (3.0, 2.0)],
+        )
 
     def test_explicit_source_and_target_sides_independently_override_defaults(self):
         anchors = {
