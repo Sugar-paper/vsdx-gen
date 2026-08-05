@@ -1,0 +1,52 @@
+{
+  "page": {"name": "Page-1", "title": "形状与样式展示", "width": 8.5, "height": 11},
+  "nodes": [
+    {"id": "n01", "text": "rect",     "type": "rect",        "x": 1.25, "y": 9.8,  "w": 1.3, "h": 0.75, "fill": "#FFFFFF", "stroke": "#000000"},
+    {"id": "n02", "text": "diamond",  "type": "diamond",     "x": 2.85, "y": 9.8,  "w": 1.3, "h": 0.9,  "fill": "#FFF2CC", "stroke": "#D6B656"},
+    {"id": "n03", "text": "ellipse",  "type": "ellipse",     "x": 4.45, "y": 9.8,  "w": 1.3, "h": 0.8,  "fill": "#DAE8FC", "stroke": "#6C8EBF"},
+    {"id": "n04", "text": "process",  "type": "process",     "x": 6.05, "y": 9.8,  "w": 1.3, "h": 0.75, "fill": "#D5E8D4", "stroke": "#82B366"},
+    {"id": "n05", "text": "cylinder", "type": "cylinder",    "x": 7.65, "y": 9.8,  "w": 1.0, "h": 0.9,  "fill": "#E1D5E7", "stroke": "#9673A6"},
+    {"id": "n06", "text": "document", "type": "document",    "x": 1.25, "y": 8.15, "w": 1.3, "h": 0.85, "fill": "#FFE6CC", "stroke": "#D79B00"},
+    {"id": "n07", "text": "note",     "type": "note",        "x": 2.85, "y": 8.15, "w": 1.3, "h": 0.8,  "fill": "#FFF2CC", "stroke": "#D6B656"},
+    {"id": "n08", "text": "triangle", "type": "triangle",    "x": 4.45, "y": 8.15, "w": 1.2, "h": 0.9,  "fill": "#F8CECC", "stroke": "#B85450"},
+    {"id": "n09", "text": "pentagon", "type": "pentagon",    "x": 6.05, "y": 8.15, "w": 1.3, "h": 0.8,  "fill": "#D5E8D4", "stroke": "#82B366"},
+    {"id": "n10", "text": "hexagon",  "type": "hexagon",     "x": 7.65, "y": 8.15, "w": 1.3, "h": 0.85, "fill": "#DAE8FC", "stroke": "#6C8EBF"},
+    {"id": "n11", "text": "parallelogram", "type": "parallelogram", "x": 1.25, "y": 6.5, "w": 1.4, "h": 0.75, "fill": "#FFF2CC", "stroke": "#D6B656"},
+    {"id": "n12", "text": "trapezoid", "type": "trapezoid",  "x": 2.85, "y": 6.5,  "w": 1.3, "h": 0.75, "fill": "#D5E8D4", "stroke": "#82B366"},
+    {"id": "n13", "text": "arrow",    "type": "arrow",       "x": 4.45, "y": 6.5,  "w": 1.4, "h": 0.7,  "fill": "#F8CECC", "stroke": "#B85450"},
+    {"id": "n14", "text": "leftArrow","type": "leftArrow",   "x": 6.05, "y": 6.5,  "w": 1.4, "h": 0.7,  "fill": "#DAE8FC", "stroke": "#6C8EBF"},
+    {"id": "n15", "text": "upArrow",  "type": "upArrow",     "x": 7.65, "y": 6.5,  "w": 0.85, "h": 1.0, "fill": "#E1D5E7", "stroke": "#9673A6"},
+    {"id": "n16", "text": "downArrow","type": "downArrow",   "x": 1.25, "y": 5.0,  "w": 0.85, "h": 1.0, "fill": "#FFE6CC", "stroke": "#D79B00"},
+    {"id": "n17", "text": "star",     "type": "star",        "x": 2.85, "y": 5.0,  "w": 1.1,  "h": 1.0, "fill": "#FFF2CC", "stroke": "#D6B656"},
+    {"id": "n18", "text": "旋转30°",  "type": "rect",        "x": 4.45, "y": 5.0,  "w": 1.2, "h": 0.75, "fill": "#DAE8FC", "stroke": "#6C8EBF", "rotation": 30},
+    {"id": "n19", "text": "渐变",     "type": "rect",        "x": 6.05, "y": 5.0,  "w": 1.3, "h": 0.75, "fill": "#DAE8FC", "stroke": "#6C8EBF", "gradient": "#FFFFFF"},
+    {"id": "n20", "text": "虚线/透明", "type": "rect",        "x": 7.65, "y": 5.0, "w": 1.3, "h": 0.75, "fill": "#F8CECC", "stroke": "#B85450", "dashed": true, "opacity": 50},
+    {"id": "n21", "text": "粗体宋体", "type": "rect",        "x": 1.25, "y": 3.5,  "w": 1.4, "h": 0.75, "fill": "#D5E8D4", "stroke": "#82B366", "fontFamily": "SimSun", "fontSize": 14, "bold": true, "fontColor": "#006600"},
+    {"id": "n22", "text": "斜体黑体", "type": "rect",        "x": 2.85, "y": 3.5,  "w": 1.4, "h": 0.75, "fill": "#FFF2CC", "stroke": "#D6B656", "fontFamily": "SimHei", "italic": true, "underline": true, "align": "left", "valign": "top"},
+    {"id": "n23", "text": "自定义几何", "type": "rect",       "x": 4.45, "y": 3.5,  "w": 1.3, "h": 0.8,
+     "fill": "#DAE8FC", "stroke": "#6C8EBF",
+     "geometry": [
+       ["MoveTo", {"x": 0.2, "y": 0.1}],
+       ["LineTo", {"x": 0.8, "y": 0.1}],
+       ["LineTo", {"x": 1.1, "y": 0.4}],
+       ["ArcTo",  {"x": 0.8, "y": 0.7, "a": 0.3}],
+       ["LineTo", {"x": 0.2, "y": 0.7}],
+       ["LineTo", {"x": 0.2, "y": 0.1}]
+     ]},
+    {"id": "n24", "text": "曲线",     "type": "rect",        "x": 6.05, "y": 3.5,  "w": 1.3, "h": 0.8,
+     "fill": "#D5E8D4", "stroke": "#82B366",
+     "geometry": [
+       ["MoveTo", {"x": 0, "y": 0}],
+       ["RelCubBezTo", {"x": 1.0, "y": 0, "a": 0, "b": 0.8, "c": 1.3, "d": 0.8}],
+       ["LineTo", {"x": 1.3, "y": 0.8}],
+       ["LineTo", {"x": 0, "y": 0.8}],
+       ["LineTo", {"x": 0, "y": 0}]
+     ]}
+  ],
+  "edges": [
+    {"id": "e1", "from": "n01", "to": "n02", "label": "标准", "endArrow": "block"},
+    {"id": "e2", "from": "n03", "to": "n04", "label": "虚线红", "dashed": true, "lineColor": "#B85450", "startArrow": "classic", "endArrow": "oval"},
+    {"id": "e3", "from": "n18", "to": "n19", "label": "折线", "endArrow": "block", "points": [[5.2, 5.45], [5.2, 4.2], [5.4, 4.2]]},
+    {"id": "e4", "from": "n20", "to": "n21", "label": "加粗线", "strokeWidth": 0.03, "endArrow": "diamond", "lineColor": "#9673A6", "points": [[7.0, 4.2], [1.95, 4.2]]}
+  ]
+}

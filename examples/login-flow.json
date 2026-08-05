@@ -1,0 +1,17 @@
+{
+  "page": {"name": "Page-1", "title": "登录流程", "width": 8.5, "height": 11},
+  "nodes": [
+    {"id": "A", "text": "用户登录", "type": "rect",    "x": 3.0,  "y": 9.0,  "w": 1.5, "h": 0.75, "fill": "#FFFFFF", "stroke": "#000000"},
+    {"id": "B", "text": "验证密码", "type": "diamond", "x": 3.0,  "y": 6.5,  "w": 1.5, "h": 1.0,  "fill": "#FFF2CC", "stroke": "#D6B656"},
+    {"id": "C", "text": "进入主页", "type": "rect",    "x": 1.0,  "y": 4.0,  "w": 1.5, "h": 0.75, "fill": "#D5E8D4", "stroke": "#82B366"},
+    {"id": "D", "text": "提示错误", "type": "rect",    "x": 5.0,  "y": 4.0,  "w": 1.5, "h": 0.75, "fill": "#F8CECC", "stroke": "#B85450"},
+    {"id": "E", "text": "加载数据", "type": "rect",    "x": 1.0,  "y": 1.5,  "w": 1.5, "h": 0.75, "fill": "#DAE8FC", "stroke": "#6C8EBF"}
+  ],
+  "edges": [
+    {"id": "e1", "from": "A", "to": "B"},
+    {"id": "e2", "from": "B", "to": "C", "label": "成功"},
+    {"id": "e3", "from": "B", "to": "D", "label": "失败"},
+    {"id": "e4", "from": "D", "to": "B", "fromSide": "left", "toSide": "right"},
+    {"id": "e5", "from": "C", "to": "E"}
+  ]
+}
