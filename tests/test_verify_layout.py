@@ -77,14 +77,18 @@ def edge(
     )
 
 
-def graph(*cells, page_height="1117.6"):
-    page_attribute = "" if page_height is None else ' pageHeight="%s"' % page_height
+def graph(*cells, page_width="863.6", page_height="1117.6"):
+    page_attributes = ""
+    if page_width is not None:
+        page_attributes += ' pageWidth="%s"' % page_width
+    if page_height is not None:
+        page_attributes += ' pageHeight="%s"' % page_height
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<mxfile host="unit-test"><diagram name="Page-1">'
         '<mxGraphModel%s><root><mxCell id="0"/><mxCell parent="0" id="1"/>'
         '%s</root></mxGraphModel></diagram></mxfile>'
-    ) % (page_attribute, "".join(cells))
+    ) % (page_attributes, "".join(cells))
 
 
 class VerifyLayoutTests(unittest.TestCase):
@@ -124,10 +128,10 @@ class VerifyLayoutTests(unittest.TestCase):
         self.assertEqual(report.edge_count, 1)
         self.assertEqual([node.id for node in report.nodes], ["A", "B"])
         self.assertEqual([node.label for node in report.nodes], ["Alpha & One", "Beta"])
-        self.assertEqual(report.nodes[0].box, (-101.6, 101.6, 0.0, 203.2))
+        self.assertEqual(report.nodes[0].box, (0.0, 101.6, 101.6, 203.2))
         self.assertEqual(
             report.edges[0].points,
-            ((0.0, 152.4), (101.6, 50.8), (101.6, 152.4), (203.2, 152.4)),
+            ((101.6, 152.4), (101.6, 50.8), (101.6, 152.4), (203.2, 152.4)),
         )
         self.assertEqual(report.problems, ())
 
@@ -259,6 +263,112 @@ class VerifyLayoutTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("pageHeight 缺失", output)
         self.assertIn("1117.6px (11.00in)", output)
+
+    def test_page_dimensions_parse_explicit_values_and_documented_defaults(self):
+        explicit = self.analyze_xml(
+            graph(vertex("A", 0, 0, 10, 10), page_width="1422.4", page_height="2336.8")
+        )
+        self.assertEqual(explicit.page_width_px, 1422.4)
+        self.assertEqual(explicit.page_height_px, 2336.8)
+        self.assertFalse(explicit.page_width_defaulted)
+        self.assertFalse(explicit.page_height_defaulted)
+
+        defaulted = self.analyze_xml(
+            graph(vertex("A", 0, 0, 10, 10), page_width=None, page_height=None)
+        )
+        self.assertEqual(defaulted.page_width_px, 8.5 * verify_layout.PX)
+        self.assertEqual(defaulted.page_height_px, 11.0 * verify_layout.PX)
+        self.assertTrue(defaulted.page_width_defaulted)
+        self.assertTrue(defaulted.page_height_defaulted)
+
+    def test_expected_page_dimensions_are_paired_positive_and_strict_by_default(self):
+        matching = self.analyze_xml(
+            graph(vertex("A", 10, 10, 10, 10)),
+            expected_page_width_in=8.5,
+            expected_page_height_in=11.0,
+        )
+        self.assertAlmostEqual(matching.expected_page_width_px, 863.6)
+        self.assertAlmostEqual(matching.expected_page_height_px, 1117.6)
+        self.assertFalse(any("页面尺寸不匹配" in item for item in matching.problems))
+
+        mismatch = self.analyze_xml(
+            graph(vertex("A", 10, 10, 10, 10)),
+            expected_page_width_in=14.0,
+            expected_page_height_in=23.0,
+        )
+        self.assert_problem(mismatch, "页面尺寸不匹配")
+
+        for kwargs in (
+            {"expected_page_width_in": 8.5},
+            {"expected_page_height_in": 11.0},
+            {"expected_page_width_in": 0, "expected_page_height_in": 11.0},
+            {"expected_page_width_in": 8.5, "expected_page_height_in": float("inf")},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(verify_layout.LayoutInputError):
+                    self.analyze_xml(graph(vertex("A", 10, 10, 10, 10)), **kwargs)
+
+    def test_tiled_paper_allows_dimension_mismatch_and_uses_source_bounds(self):
+        xml = graph(vertex("A", 1200, 1800, 100, 100, "Lower lane"))
+        strict = self.analyze_xml(
+            xml,
+            expected_page_width_in=14.0,
+            expected_page_height_in=23.0,
+        )
+        self.assert_problem(strict, "页面尺寸不匹配")
+        self.assert_problem(strict, "节点 Lower lane 超出页面边界")
+
+        tiled = self.analyze_xml(
+            xml,
+            expected_page_width_in=14.0,
+            expected_page_height_in=23.0,
+            allow_tiled_paper=True,
+        )
+        self.assertEqual(tiled.problems, ())
+        self.assertTrue(tiled.tiled_paper)
+        self.assertTrue(tiled.tiled_size_mismatch)
+        self.assertEqual(tiled.bounds_width_px, 14.0 * verify_layout.PX)
+        self.assertEqual(tiled.bounds_height_px, 23.0 * verify_layout.PX)
+        self.assertEqual(tiled.summary[0].center_inches, (12.303149606299, 4.791338582677))
+
+        with self.assertRaises(verify_layout.LayoutInputError):
+            self.analyze_xml(xml, allow_tiled_paper=True)
+
+    def test_page_bounds_cover_rotated_nodes_edge_points_and_label_centers(self):
+        rotated = self.analyze_xml(
+            graph(vertex("A", 0, 0, 10, 10, "Rotated", style="rotation=45;"))
+        )
+        self.assert_problem(rotated, "节点 Rotated 超出页面边界")
+
+        edge_point = self.analyze_xml(
+            graph(
+                vertex("A", 10, 10, 20, 20),
+                vertex("B", 100, 10, 20, 20),
+                edge("E", "A", "B", [(30, 20), (900, 20), (100, 20)]),
+            )
+        )
+        self.assert_problem(edge_point, "边 E 的路径点超出页面边界")
+
+        label = self.analyze_xml(
+            graph(
+                vertex("A", 10, 10, 20, 20),
+                vertex("B", 100, 10, 20, 20),
+                edge(
+                    "E", "A", "B", [(30, 20), (100, 20)],
+                    label="Outside", offset=(800, 0),
+                ),
+            )
+        )
+        self.assert_problem(label, '标签 "Outside" 中心超出页面边界')
+
+        epsilon_ok = self.analyze_xml(
+            graph(vertex("A", -verify_layout.EPSILON_PX, 0, 10, 10, "Epsilon"))
+        )
+        self.assertFalse(any("超出页面边界" in item for item in epsilon_ok.problems))
+        epsilon_bad = self.analyze_xml(
+            graph(vertex("A", -verify_layout.EPSILON_PX - 0.001, 0, 10, 10, "Beyond"))
+        )
+        self.assert_problem(epsilon_bad, "节点 Beyond 超出页面边界")
 
     def test_coordinate_summary_uses_model_page_height_for_11_and_16_inches(self):
         for page_inches, expected_y in ((11.0, 9.5), (16.0, 14.5)):
@@ -673,6 +783,31 @@ class VerifyLayoutTests(unittest.TestCase):
         self.assertIn("边数: 1", output)
         self.assertIn("布局检查全部通过", output)
         self.assertEqual(error, "")
+
+        code, output, error = self.run_main([
+            str(valid),
+            "--expect-page-width-in", "14",
+            "--expect-page-height-in", "23",
+        ])
+        self.assertEqual(code, 1)
+        self.assertIn("页面尺寸不匹配", output)
+        self.assertEqual(error, "")
+
+        code, output, error = self.run_main([
+            str(valid),
+            "--expect-page-width-in", "14",
+            "--expect-page-height-in", "23",
+            "--allow-tiled-paper",
+        ])
+        self.assertEqual(code, 0)
+        self.assertIn("平铺纸张模式", output)
+        self.assertEqual(error, "")
+
+        code, output, error = self.run_main([
+            str(valid), "--expect-page-width-in", "8.5",
+        ])
+        self.assertEqual(code, 2)
+        self.assertIn("错误", error)
 
         code, output, error = self.run_main(
             [str(valid), "--expect-nodes", "3", "--expect-edges", "1"]

@@ -15,8 +15,10 @@ from xml.etree import ElementTree as ET
 
 PX = 101.6
 EPSILON_PX = 0.5
+PAGE_DIMENSION_TOLERANCE_PX = 1.0
 # VSDX defaults to an 11-inch page. Imported XML without pageHeight uses the
 # same explicit fallback so Y-up summaries remain deterministic.
+DEFAULT_PAGE_WIDTH_PX = 8.5 * PX
 DEFAULT_PAGE_HEIGHT_PX = 11.0 * PX
 
 Point = Tuple[float, float]
@@ -59,8 +61,16 @@ class NodeSummary:
 class LayoutReport:
     nodes: Tuple[Node, ...]
     edges: Tuple[Edge, ...]
+    page_width_px: float
     page_height_px: float
+    page_width_defaulted: bool
     page_height_defaulted: bool
+    expected_page_width_px: Optional[float]
+    expected_page_height_px: Optional[float]
+    bounds_width_px: float
+    bounds_height_px: float
+    tiled_paper: bool
+    tiled_size_mismatch: bool
     problems: Tuple[str, ...]
     summary: Tuple[NodeSummary, ...]
 
@@ -239,14 +249,24 @@ def _find_model(document_root):
     )
 
 
-def _parse_page_height(model):
-    raw = model.get("pageHeight")
+def _parse_page_dimension(model, attribute, default):
+    raw = model.get(attribute)
     if raw is None or not raw.strip():
-        return DEFAULT_PAGE_HEIGHT_PX, True
-    value = _required_number(model, "pageHeight", "mxGraphModel")
+        return default, True
+    value = _required_number(model, attribute, "mxGraphModel")
     if value <= 0:
-        raise LayoutInputError("mxGraphModel.pageHeight 必须大于 0")
+        raise LayoutInputError("mxGraphModel.%s 必须大于 0" % attribute)
     return value, False
+
+
+def _parse_page_dimensions(model):
+    width, width_defaulted = _parse_page_dimension(
+        model, "pageWidth", DEFAULT_PAGE_WIDTH_PX
+    )
+    height, height_defaulted = _parse_page_dimension(
+        model, "pageHeight", DEFAULT_PAGE_HEIGHT_PX
+    )
+    return width, height, width_defaulted, height_defaulted
 
 
 def _parse_point(element, context, missing_default=None):
@@ -639,7 +659,16 @@ def _node_name(node):
     return _display(node.label or node.id)
 
 
-def _layout_problems(nodes, edges, expect_nodes, expect_edges):
+def _point_inside_page(point, page_width_px, page_height_px):
+    return (
+        -EPSILON_PX <= point[0] <= page_width_px + EPSILON_PX
+        and -EPSILON_PX <= point[1] <= page_height_px + EPSILON_PX
+    )
+
+
+def _layout_problems(
+        nodes, edges, expect_nodes, expect_edges,
+        page_width_px, page_height_px):
     problems = []
     seen = set()
 
@@ -655,6 +684,12 @@ def _layout_problems(nodes, edges, expect_nodes, expect_edges):
     if expect_edges is not None and len(edges) != expect_edges:
         add("期望边数 %d，实际 %d" % (expect_edges, len(edges)))
 
+    for node in nodes:
+        if any(
+                not _point_inside_page(point, page_width_px, page_height_px)
+                for point in _node_polygon(node)):
+            add("节点 %s 超出页面边界" % _node_name(node))
+
     node_by_id = {node.id: node for node in nodes}
     for edge_value in edges:
         edge_name = _display(edge_value.id)
@@ -668,6 +703,18 @@ def _layout_problems(nodes, edges, expect_nodes, expect_edges):
             add("边 %s 的 target 引用不存在: %s" % (edge_name, _display(edge_value.target)))
         if len(edge_value.points) < 2:
             add("边 %s 缺少可验证的几何路径" % edge_name)
+        elif any(
+                not _point_inside_page(point, page_width_px, page_height_px)
+                for point in edge_value.points):
+            add("边 %s 的路径点超出页面边界" % edge_name)
+        if edge_value.label and len(edge_value.points) >= 2:
+            label_center = _edge_label_center(edge_value)
+            if not _point_inside_page(
+                    label_center, page_width_px, page_height_px):
+                add(
+                    '标签 "%s" 中心超出页面边界'
+                    % _display(edge_value.label)
+                )
 
     for index, first_node in enumerate(nodes):
         for second_node in nodes[index + 1 :]:
@@ -746,10 +793,45 @@ def _validate_expected_count(value, name):
         raise LayoutInputError("%s 必须是非负整数" % name)
 
 
-def analyze_layout(path, expect_nodes=None, expect_edges=None):
+def _validate_expected_dimensions(width_inches, height_inches):
+    if (width_inches is None) != (height_inches is None):
+        raise LayoutInputError(
+            "expected_page_width_in 和 expected_page_height_in 必须同时提供"
+        )
+    if width_inches is None:
+        return None, None
+    values = []
+    for value, name in (
+            (width_inches, "expected_page_width_in"),
+            (height_inches, "expected_page_height_in")):
+        if isinstance(value, bool):
+            raise LayoutInputError("%s 必须是正数" % name)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise LayoutInputError("%s 必须是正数" % name) from None
+        if not math.isfinite(number) or number <= 0:
+            raise LayoutInputError("%s 必须是正数" % name)
+        values.append(number * PX)
+    return tuple(values)
+
+
+def analyze_layout(
+        path, expect_nodes=None, expect_edges=None,
+        expected_page_width_in=None, expected_page_height_in=None,
+        allow_tiled_paper=False):
     """Return parsed counts, layout problems, and a Y-up coordinate summary."""
     _validate_expected_count(expect_nodes, "expect_nodes")
     _validate_expected_count(expect_edges, "expect_edges")
+    expected_page_width_px, expected_page_height_px = (
+        _validate_expected_dimensions(
+            expected_page_width_in, expected_page_height_in
+        )
+    )
+    if allow_tiled_paper and expected_page_width_px is None:
+        raise LayoutInputError(
+            "allow_tiled_paper 需要同时提供期望页面宽度和高度"
+        )
     input_path = Path(path)
     try:
         tree = ET.parse(input_path)
@@ -766,18 +848,73 @@ def analyze_layout(path, expect_nodes=None, expect_edges=None):
     graph_root = _direct_child(model, "root")
     if graph_root is None:
         raise LayoutInputError("不是有效的 draw.io XML: mxGraphModel 缺少 root")
-    page_height_px, page_height_defaulted = _parse_page_height(model)
+    (
+        page_width_px,
+        page_height_px,
+        page_width_defaulted,
+        page_height_defaulted,
+    ) = _parse_page_dimensions(model)
     nodes, raw_edges = _collect_cells(graph_root)
     node_by_id = {node.id: node for node in nodes}
     edges = tuple(_resolve_edge(edge_value, node_by_id) for edge_value in raw_edges)
-    problems = _layout_problems(nodes, edges, expect_nodes, expect_edges)
+    size_mismatch = False
+    if expected_page_width_px is not None:
+        size_mismatch = (
+            abs(page_width_px - expected_page_width_px)
+            > PAGE_DIMENSION_TOLERANCE_PX
+            or abs(page_height_px - expected_page_height_px)
+            > PAGE_DIMENSION_TOLERANCE_PX
+        )
+    bounds_width_px = (
+        expected_page_width_px if allow_tiled_paper else page_width_px
+    )
+    bounds_height_px = (
+        expected_page_height_px if allow_tiled_paper else page_height_px
+    )
+    problems = list(_layout_problems(
+        nodes,
+        edges,
+        expect_nodes,
+        expect_edges,
+        bounds_width_px,
+        bounds_height_px,
+    ))
+    if size_mismatch and not allow_tiled_paper:
+        problems.insert(
+            0,
+            "页面尺寸不匹配: 期望 %.1f x %.1fpx (%.2f x %.2fin)，"
+            "实际 %.1f x %.1fpx (%.2f x %.2fin)"
+            % (
+                expected_page_width_px,
+                expected_page_height_px,
+                expected_page_width_px / PX,
+                expected_page_height_px / PX,
+                page_width_px,
+                page_height_px,
+                page_width_px / PX,
+                page_height_px / PX,
+            ),
+        )
+    summary_height_px = (
+        expected_page_height_px
+        if expected_page_height_px is not None
+        else page_height_px
+    )
     return LayoutReport(
         nodes=nodes,
         edges=edges,
+        page_width_px=page_width_px,
         page_height_px=page_height_px,
+        page_width_defaulted=page_width_defaulted,
         page_height_defaulted=page_height_defaulted,
-        problems=problems,
-        summary=_coordinate_summary(nodes, page_height_px),
+        expected_page_width_px=expected_page_width_px,
+        expected_page_height_px=expected_page_height_px,
+        bounds_width_px=bounds_width_px,
+        bounds_height_px=bounds_height_px,
+        tiled_paper=bool(allow_tiled_paper),
+        tiled_size_mismatch=bool(allow_tiled_paper and size_mismatch),
+        problems=tuple(problems),
+        summary=_coordinate_summary(nodes, summary_height_px),
     )
 
 
@@ -791,21 +928,61 @@ def _nonnegative_integer(value):
     return result
 
 
+def _positive_float(value):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("必须是正数") from None
+    if not math.isfinite(result) or result <= 0:
+        raise argparse.ArgumentTypeError("必须是正数")
+    return result
+
+
 def _build_parser():
     parser = _ArgumentParser(description="验证 draw.io XML 的结构和布局")
     parser.add_argument("file", help="draw.io 导出的未压缩 XML 文件")
     parser.add_argument("--expect-nodes", type=_nonnegative_integer)
     parser.add_argument("--expect-edges", type=_nonnegative_integer)
+    parser.add_argument("--expect-page-width-in", type=_positive_float)
+    parser.add_argument("--expect-page-height-in", type=_positive_float)
+    parser.add_argument("--allow-tiled-paper", action="store_true")
     return parser
 
 
 def _print_report(report):
     print("节点数: %d" % report.node_count)
     print("边数: %d" % report.edge_count)
+    if report.page_width_defaulted:
+        print(
+            "mxGraphModel.pageWidth 缺失，采用默认值 %.1fpx (%.2fin)"
+            % (report.page_width_px, report.page_width_px / PX)
+        )
+    else:
+        print(
+            "页面宽度: %.1fpx (%.2fin)"
+            % (report.page_width_px, report.page_width_px / PX)
+        )
     if report.page_height_defaulted:
         print(
             "mxGraphModel.pageHeight 缺失，采用默认值 %.1fpx (%.2fin)"
             % (report.page_height_px, report.page_height_px / PX)
+        )
+
+    if report.expected_page_width_px is not None:
+        print(
+            "期望页面: %.1f x %.1fpx (%.2f x %.2fin)"
+            % (
+                report.expected_page_width_px,
+                report.expected_page_height_px,
+                report.expected_page_width_px / PX,
+                report.expected_page_height_px / PX,
+            )
+        )
+    if report.tiled_paper:
+        status = "允许纸张尺寸不匹配" if report.tiled_size_mismatch else "纸张尺寸一致"
+        print(
+            "平铺纸张模式: %s；边界使用 %.1f x %.1fpx"
+            % (status, report.bounds_width_px, report.bounds_height_px)
         )
     else:
         print(
@@ -850,6 +1027,9 @@ def main(argv=None):
             arguments.file,
             expect_nodes=arguments.expect_nodes,
             expect_edges=arguments.expect_edges,
+            expected_page_width_in=arguments.expect_page_width_in,
+            expected_page_height_in=arguments.expect_page_height_in,
+            allow_tiled_paper=arguments.allow_tiled_paper,
         )
     except LayoutInputError as exc:
         print("错误: %s" % _display(exc), file=sys.stderr)

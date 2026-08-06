@@ -9,6 +9,7 @@ checked only when this optional integration tool is executed.
 import argparse
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -19,6 +20,9 @@ from xml.etree import ElementTree as ET
 
 DEFAULT_URL = "http://127.0.0.1:8080"
 DEFAULT_TIMEOUT = 120.0
+_PAGE_STARTUP_ERROR = (
+    "Browser.new_page: Cannot read properties of undefined (reading '_page')"
+)
 
 
 class ImportToolError(RuntimeError):
@@ -215,15 +219,54 @@ def _load_playwright():
     return sync_playwright
 
 
-def _launch_firefox(firefox, timeout_ms):
+def _launch_firefox(firefox, timeout_ms, env=None):
+    launch_options = {"headless": True, "timeout": timeout_ms}
+    if env is not None:
+        launch_options["env"] = env
     retry_delays = (0.5, 1.0)
     for attempt in range(3):
         try:
-            return firefox.launch(headless=True, timeout=timeout_ms)
+            return firefox.launch(**launch_options)
         except Exception as error:
             if "EBUSY" not in str(error) or attempt >= len(retry_delays):
                 raise
             time.sleep(retry_delays[attempt])
+    raise AssertionError("unreachable")
+
+
+def _is_page_startup_error(error):
+    return str(error) == _PAGE_STARTUP_ERROR
+
+
+def _close_browser(browser):
+    try:
+        browser.close()
+    except Exception:
+        pass
+
+
+def _open_browser_page(firefox, timeout_ms):
+    attempt_count = 3 if sys.platform == "win32" else 2
+    for attempt in range(attempt_count):
+        launch_env = None
+        if attempt == 2:
+            launch_env = os.environ.copy()
+            launch_env["MOZ_DISABLE_CONTENT_SANDBOX"] = "1"
+            print(
+                "警告: Firefox 页面启动连续失败；本次浏览器进程将设置 "
+                "MOZ_DISABLE_CONTENT_SANDBOX=1",
+                file=sys.stderr,
+            )
+        browser = _launch_firefox(firefox, timeout_ms, env=launch_env)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+        except Exception as error:
+            _close_browser(browser)
+            if not _is_page_startup_error(error) or attempt + 1 == attempt_count:
+                raise
+            time.sleep(0.25 if attempt == 0 else 0.5)
+        else:
+            return browser, page
     raise AssertionError("unreachable")
 
 
@@ -477,8 +520,7 @@ def import_vsdx(
                     "Playwright Firefox 未安装: %s" % _display(executable),
                     code=2,
                 )
-            browser = _launch_firefox(playwright.firefox, timeout_ms)
-            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            browser, page = _open_browser_page(playwright.firefox, timeout_ms)
             page.set_default_timeout(timeout_ms)
             page.set_default_navigation_timeout(timeout_ms)
             page.goto(url, timeout=timeout_ms, wait_until="load")
@@ -565,10 +607,7 @@ def import_vsdx(
             return summary
     finally:
         if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
+            _close_browser(browser)
 
 
 def _nonnegative_integer(value):

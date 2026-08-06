@@ -5,7 +5,7 @@
     <mxCell parent="0" id="1"/>
     <UserObject label="Alpha &amp; One" id="wrapper-a">
       <mxCell parent="1" vertex="1" style="shape=stencil;vsdxID=1;" id="A">
-        <mxGeometry height="1.016e2" width="1.016e2" y="1.016e2" x="-1.016e2" as="geometry"/>
+        <mxGeometry height="1.016e2" width="1.016e2" y="1.016e2" x="0" as="geometry"/>
       </mxCell>
     </UserObject>
     <mxCell style="shape=stencil;vsdxID=2;" value="Beta" vertex="1" parent="1" id="B">
@@ -13,7 +13,7 @@
     </mxCell>
     <mxCell target="B" source="A" edge="1" parent="1" id="E" style="vsdxID=3;">
       <mxGeometry relative="1" as="geometry">
-        <mxPoint y="152.4" as="sourcePoint" x="0"/>
+        <mxPoint y="152.4" as="sourcePoint" x="101.6"/>
         <Array as="points">
           <mxPoint y="50.8" x="101.6"/>
           <mxPoint x="101.6" y="152.4"/>

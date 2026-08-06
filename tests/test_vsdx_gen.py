@@ -1240,7 +1240,8 @@ class OutputSafetyTests(unittest.TestCase):
         events = []
 
         def recording_validate(
-            path, expected_connector_count=None, expected_connector_semantics=None
+            path, expected_connector_count=None, expected_connector_semantics=None,
+            expected_node_count=None,
         ):
             events.append(
                 (
@@ -1248,12 +1249,14 @@ class OutputSafetyTests(unittest.TestCase):
                     Path(path),
                     expected_connector_count,
                     expected_connector_semantics,
+                    expected_node_count,
                 )
             )
             return real_validate(
                 path,
                 expected_connector_count=expected_connector_count,
                 expected_connector_semantics=expected_connector_semantics,
+                expected_node_count=expected_node_count,
             )
 
         def recording_replace(source, destination):
@@ -1284,6 +1287,7 @@ class OutputSafetyTests(unittest.TestCase):
                     },
                 ),
             )
+            self.assertEqual(events[0][4], 2)
             validated_temp = events[0][1]
             replaced_temp, replaced_output = events[1][1:]
             self.assertEqual(validated_temp.resolve(), replaced_temp.resolve())
@@ -1576,6 +1580,155 @@ class VisioCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             unit_cells, {"PageScale": "PT", "DrawingScale": "PT"}
         )
+
+    def test_validate_resolves_page_relationship_id_and_target_contract(self):
+        pages_part = "visio/pages/pages.xml"
+        rels_part = "visio/pages/_rels/pages.xml.rels"
+        page_path = ".//" + vsdx_gen.V("Page")
+
+        def remove_page_rid(root):
+            root.find(page_path).find(vsdx_gen.V("Rel")).attrib.pop(
+                vsdx_gen.RID_ATTR
+            )
+
+        def duplicate_page_rel(root):
+            page = root.find(page_path)
+            page.append(copy.deepcopy(page.find(vsdx_gen.V("Rel"))))
+
+        def unresolved_page_rid(root):
+            root.find(page_path).find(vsdx_gen.V("Rel")).set(
+                vsdx_gen.RID_ATTR, "rId404"
+            )
+
+        def duplicate_relationship_id(root):
+            root.append(copy.deepcopy(root[0]))
+
+        def external_relationship(root):
+            root[0].set("TargetMode", "External")
+
+        def escaping_target(root):
+            root[0].set("Target", "../page1.xml")
+
+        def wrong_target(root):
+            root[0].set("Target", "page2.xml")
+
+        def wrong_relationship_type(root):
+            root[0].set("Type", "http://example.invalid/not-a-page")
+
+        cases = (
+            ("missing-rid", {pages_part: remove_page_rid}, "Page Rel is missing r:id"),
+            ("duplicate-page-rel", {pages_part: duplicate_page_rel},
+             "Page must contain exactly one direct Rel"),
+            ("unresolved-rid", {pages_part: unresolved_page_rid},
+             "r:id rId404 does not resolve exactly once"),
+            ("duplicate-rel-id", {rels_part: duplicate_relationship_id},
+             "duplicate relationship Id rId1"),
+            ("external", {rels_part: external_relationship},
+             "relationship rId1 must be internal"),
+            ("escaping", {rels_part: escaping_target},
+             "relationship rId1 Target escapes visio/pages"),
+            ("wrong-target", {rels_part: wrong_target},
+             "relationship rId1 must resolve to visio/pages/page1.xml"),
+            ("wrong-type", {rels_part: wrong_relationship_type},
+             "relationship rId1 type must end with /page"),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, mutators, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(temp, name=name + ".vsdx")
+                    mutated = self.mutate_package(output, xml_mutators=mutators)
+                    errors = vsdx_gen.validate(mutated)
+                    self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_validate_enforces_page_contents_order_shape_ids_and_expected_nodes(self):
+        page_part = "visio/pages/page1.xml"
+
+        def wrong_root(root):
+            root.tag = vsdx_gen.V("NotPageContents")
+
+        def wrong_child_order(root):
+            children = list(root)
+            root[:] = list(reversed(children))
+
+        def empty_shapes(root):
+            root.find(vsdx_gen.V("Shapes")).clear()
+
+        def invalid_shape_id(root):
+            root.find("%s/%s" % (vsdx_gen.V("Shapes"), vsdx_gen.V("Shape"))).set(
+                "ID", "0"
+            )
+
+        def duplicate_shape_id(root):
+            shapes = root.find(vsdx_gen.V("Shapes")).findall(vsdx_gen.V("Shape"))
+            shapes[1].set("ID", shapes[0].get("ID"))
+
+        cases = (
+            ("root", wrong_root, "root must be PageContents"),
+            ("order", wrong_child_order, "direct children must be Shapes, Connects"),
+            ("empty", empty_shapes, "Shapes must contain at least one direct Shape"),
+            ("invalid-id", invalid_shape_id, "Shape ID 0 must be a positive decimal integer"),
+            ("duplicate-id", duplicate_shape_id, "duplicate shape IDs"),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, mutator, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(temp, name="contents-" + name + ".vsdx")
+                    mutated = self.mutate_package(
+                        output, xml_mutators={page_part: mutator}
+                    )
+                    errors = vsdx_gen.validate(mutated, expected_node_count=2)
+                    self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_generate_passes_expected_node_count_to_validator(self):
+        real_page_xml = vsdx_gen._page_xml
+
+        def renumber_node(nodes, edges, palette):
+            page = real_page_xml(nodes, edges, palette)
+            page.find(vsdx_gen.V("Shapes")).find(vsdx_gen.V("Shape")).set(
+                "ID", "3"
+            )
+            return page
+
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            output = Path(temp) / "renumbered-node.vsdx"
+            with mock.patch.object(vsdx_gen, "_page_xml", side_effect=renumber_node):
+                with self.assertRaises(vsdx_gen.PackageValidationError) as caught:
+                    vsdx_gen.generate(OutputSafetyTests.valid_data(), output)
+        self.assertTrue(any("non-connector shape IDs" in error for error in caught.exception.errors),
+                        caught.exception.errors)
+
+    def test_validate_integrates_connects_with_connector_shapes_and_endpoint_records(self):
+        page_part = "visio/pages/page1.xml"
+
+        def empty_connects(root):
+            root.find(vsdx_gen.V("Connects")).clear()
+
+        def remove_endpoint_attribute(role, attribute):
+            def mutate(root):
+                connect = next(
+                    item for item in root.findall(".//" + vsdx_gen.V("Connect"))
+                    if item.get("FromCell") == role
+                )
+                connect.attrib.pop(attribute)
+            return mutate
+
+        cases = (
+            ("empty-connects", empty_connects,
+             "Connects is empty but page has connector shapes"),
+            ("missing-from-sheet", remove_endpoint_attribute("BeginX", "FromSheet"),
+             "connect BeginX references unknown FromSheet <missing>"),
+            ("missing-to-sheet", remove_endpoint_attribute("EndX", "ToSheet"),
+             "connector 3 EndX references unknown ToSheet <missing>"),
+        )
+        with tempfile.TemporaryDirectory(prefix="visio-contract-", dir=SKILL_ROOT / "tests") as temp:
+            for name, mutator, expected in cases:
+                with self.subTest(case=name):
+                    output = self.generated_package(temp, name="connects-" + name + ".vsdx")
+                    mutated = self.mutate_package(
+                        output, xml_mutators={page_part: mutator}
+                    )
+                    errors = vsdx_gen.validate(mutated, expected_node_count=2)
+                    self.assertTrue(any(expected in error for error in errors), errors)
 
     @staticmethod
     def mutate_package(package_path, omit=None, xml_mutators=None):

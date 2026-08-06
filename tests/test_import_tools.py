@@ -1,9 +1,11 @@
 import importlib.util
 import base64
+import io
 import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -426,6 +428,293 @@ class ImportToolContractTests(unittest.TestCase):
             [(0.5,), (1.0,)],
         )
 
+    def test_page_startup_error_classifier_matches_only_the_exact_signature(self):
+        signature = (
+            "Browser.new_page: Cannot read properties of undefined "
+            "(reading '_page')"
+        )
+
+        self.assertTrue(
+            test_import._is_page_startup_error(RuntimeError(signature))
+        )
+        for different in (
+            "BrowserContext.new_page: Cannot read properties of undefined "
+            "(reading '_page')",
+            signature + " after target crash",
+            "Browser.new_page: Target page, context or browser has been closed",
+        ):
+            with self.subTest(message=different):
+                self.assertFalse(
+                    test_import._is_page_startup_error(RuntimeError(different))
+                )
+
+    def test_open_browser_page_retries_exact_failure_once_normally(self):
+        signature = (
+            "Browser.new_page: Cannot read properties of undefined "
+            "(reading '_page')"
+        )
+        first_browser = mock.Mock()
+        first_browser.new_page.side_effect = RuntimeError(signature)
+        second_browser = mock.Mock()
+        page = object()
+        second_browser.new_page.return_value = page
+        firefox = mock.Mock()
+        firefox.launch.side_effect = [first_browser, second_browser]
+
+        with mock.patch.object(test_import.sys, "platform", "linux"), \
+                mock.patch.object(test_import.time, "sleep") as sleep:
+            result = test_import._open_browser_page(firefox, timeout_ms=7500)
+
+        self.assertEqual(result, (second_browser, page))
+        self.assertEqual(
+            firefox.launch.call_args_list,
+            [
+                mock.call(headless=True, timeout=7500),
+                mock.call(headless=True, timeout=7500),
+            ],
+        )
+        first_browser.new_page.assert_called_once_with(
+            viewport={"width": 1280, "height": 900}
+        )
+        second_browser.new_page.assert_called_once_with(
+            viewport={"width": 1280, "height": 900}
+        )
+        first_browser.close.assert_called_once_with()
+        second_browser.close.assert_not_called()
+        sleep.assert_called_once_with(0.25)
+
+    def test_open_browser_page_uses_windows_only_sandbox_fallback(self):
+        signature = (
+            "Browser.new_page: Cannot read properties of undefined "
+            "(reading '_page')"
+        )
+        browsers = [mock.Mock(), mock.Mock(), mock.Mock()]
+        browsers[0].new_page.side_effect = RuntimeError(signature)
+        browsers[1].new_page.side_effect = RuntimeError(signature)
+        page = object()
+        browsers[2].new_page.return_value = page
+        firefox = mock.Mock()
+        firefox.launch.side_effect = browsers
+        stderr = io.StringIO()
+
+        with mock.patch.object(test_import.sys, "platform", "win32"), \
+                mock.patch.dict(os.environ, {"KEEP_ME": "yes"}, clear=True), \
+                mock.patch.object(test_import.time, "sleep") as sleep, \
+                mock.patch.object(test_import.sys, "stderr", stderr):
+            result = test_import._open_browser_page(firefox, timeout_ms=9000)
+            self.assertNotIn("MOZ_DISABLE_CONTENT_SANDBOX", os.environ)
+
+        self.assertEqual(result, (browsers[2], page))
+        self.assertEqual(
+            firefox.launch.call_args_list[:2],
+            [
+                mock.call(headless=True, timeout=9000),
+                mock.call(headless=True, timeout=9000),
+            ],
+        )
+        fallback_options = firefox.launch.call_args_list[2].kwargs
+        self.assertEqual(fallback_options["headless"], True)
+        self.assertEqual(fallback_options["timeout"], 9000)
+        self.assertEqual(
+            fallback_options["env"],
+            {
+                "KEEP_ME": "yes",
+                "MOZ_DISABLE_CONTENT_SANDBOX": "1",
+            },
+        )
+        browsers[0].close.assert_called_once_with()
+        browsers[1].close.assert_called_once_with()
+        browsers[2].close.assert_not_called()
+        self.assertEqual(
+            [call.args for call in sleep.call_args_list],
+            [(0.25,), (0.5,)],
+        )
+        self.assertIn("MOZ_DISABLE_CONTENT_SANDBOX=1", stderr.getvalue())
+
+    def test_open_browser_page_does_not_retry_unrelated_page_errors(self):
+        browser = mock.Mock()
+        browser.new_page.side_effect = RuntimeError(
+            "Browser.new_page: Target page, context or browser has been closed"
+        )
+        firefox = mock.Mock()
+        firefox.launch.return_value = browser
+
+        with mock.patch.object(test_import.sys, "platform", "win32"), \
+                mock.patch.object(test_import.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "Target page"):
+                test_import._open_browser_page(firefox, timeout_ms=5000)
+
+        firefox.launch.assert_called_once_with(headless=True, timeout=5000)
+        browser.close.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_open_browser_page_stops_after_two_normal_attempts_off_windows(self):
+        signature = (
+            "Browser.new_page: Cannot read properties of undefined "
+            "(reading '_page')"
+        )
+        browsers = [mock.Mock(), mock.Mock()]
+        for browser in browsers:
+            browser.new_page.side_effect = RuntimeError(signature)
+        firefox = mock.Mock()
+        firefox.launch.side_effect = browsers
+
+        with mock.patch.object(test_import.sys, "platform", "linux"), \
+                mock.patch.object(test_import.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "_page"):
+                test_import._open_browser_page(firefox, timeout_ms=5000)
+
+        self.assertEqual(firefox.launch.call_count, 2)
+        for browser in browsers:
+            browser.close.assert_called_once_with()
+        sleep.assert_called_once_with(0.25)
+
+    def test_documented_import_cli_retries_page_startup_in_a_subprocess(self):
+        fake_playwright = r'''import os
+import sys
+from pathlib import Path
+
+_launch_count = 0
+_log_path = Path(os.environ["FAKE_PLAYWRIGHT_LOG"])
+_xml = """<mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="A" parent="1" vertex="1"/>
+<mxCell id="B" parent="1" vertex="1"/>
+<mxCell id="E" parent="1" edge="1" source="A" target="B"/>
+</root></mxGraphModel>"""
+
+def _record(value):
+    with _log_path.open("a", encoding="utf-8") as stream:
+        stream.write(value + "\n")
+
+class _Mouse:
+    def move(self, *args): pass
+    def down(self): pass
+    def up(self): pass
+
+class _Keyboard:
+    def press(self, key): pass
+
+class _Locator:
+    @property
+    def first(self): return self
+    def bounding_box(self, timeout=None):
+        return {"x": 0, "y": 0, "width": 40, "height": 20}
+    def click(self, timeout=None): pass
+    def count(self): return 0
+
+class _Page:
+    mouse = _Mouse()
+    keyboard = _Keyboard()
+    def locator(self, selector, **kwargs): return _Locator()
+    def get_by_role(self, role, name=None): return _Locator()
+    def set_default_timeout(self, timeout): pass
+    def set_default_navigation_timeout(self, timeout): pass
+    def goto(self, url, timeout=None, wait_until=None): pass
+    def wait_for_function(self, expression, timeout=None): pass
+    def wait_for_timeout(self, timeout): pass
+    def set_input_files(self, selector, path, timeout=None): pass
+    def evaluate(self, expression, arg=None):
+        if expression == "window.__clip": return _xml
+        if "querySelectorAll('.geDialog')" in expression: return []
+        if "initialFitDiagram" in expression:
+            return {"fullyFramed": True, "coverage": 1.0, "scale": 1.0}
+        return None
+    def screenshot(self, path, full_page=False, timeout=None):
+        Path(path).write_bytes(b"fake-png")
+
+class _Browser:
+    def __init__(self, number): self.number = number
+    def new_page(self, **kwargs):
+        if self.number == 1:
+            raise RuntimeError(
+                "Browser.new_page: Cannot read properties of undefined "
+                "(reading '_page')"
+            )
+        return _Page()
+    def close(self): _record("close:%d" % self.number)
+
+class _Firefox:
+    executable_path = sys.executable
+    def launch(self, **kwargs):
+        global _launch_count
+        _launch_count += 1
+        _record("launch:%s" % kwargs.get("env", {}).get(
+            "MOZ_DISABLE_CONTENT_SANDBOX", ""
+        ))
+        return _Browser(_launch_count)
+
+class _Playwright:
+    firefox = _Firefox()
+
+class _Context:
+    def __enter__(self): return _Playwright()
+    def __exit__(self, exc_type, exc, traceback): return False
+
+def sync_playwright(): return _Context()
+'''
+        fake_preflight = """import urllib.request
+class _Response:
+    status = 200
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc, traceback): return False
+urllib.request.urlopen = lambda *args, **kwargs: _Response()
+"""
+        with tempfile.TemporaryDirectory(
+            prefix="import-cli-", dir=SKILL_ROOT / "tests"
+        ) as temp_dir:
+            root = Path(temp_dir)
+            fake_root = root / "fake-runtime"
+            package = fake_root / "playwright"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "sync_api.py").write_text(
+                fake_playwright, encoding="utf-8"
+            )
+            (fake_root / "sitecustomize.py").write_text(
+                fake_preflight, encoding="utf-8"
+            )
+            input_path = root / "input.vsdx"
+            output_path = root / "result.drawio"
+            log_path = root / "playwright.log"
+            input_path.write_bytes(b"vsdx")
+            environment = os.environ.copy()
+            environment.pop("MOZ_DISABLE_CONTENT_SANDBOX", None)
+            environment["PYTHONPATH"] = str(fake_root)
+            environment["FAKE_PLAYWRIGHT_LOG"] = str(log_path)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(SKILL_ROOT / "scripts" / "test_import.py"),
+                    str(input_path),
+                    str(output_path),
+                    "--url", "http://127.0.0.1:1",
+                    "--expect-nodes", "2",
+                    "--expect-edges", "1",
+                    "--timeout", "5",
+                ],
+                cwd=SKILL_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+            )
+
+            self.assertEqual(
+                completed.returncode,
+                0,
+                "stdout=%r stderr=%r" % (completed.stdout, completed.stderr),
+            )
+            self.assertTrue(output_path.is_file())
+            self.assertTrue(output_path.with_suffix(".png").is_file())
+            self.assertEqual(
+                log_path.read_text(encoding="utf-8").splitlines(),
+                ["launch:", "close:1", "launch:", "close:2"],
+            )
+
     def test_rejects_input_output_and_screenshot_path_aliases_before_runtime(self):
         with tempfile.TemporaryDirectory(prefix="import-tools-", dir=SKILL_ROOT / "tests") as temp_dir:
             root = Path(temp_dir)
@@ -741,6 +1030,8 @@ class DrawioAcceptanceHelperTests(unittest.TestCase):
         acceptance = self.acceptance()
         diagram = acceptance.parse_drawio_xml_text(ACCEPTANCE_XML)
 
+        self.assertEqual(diagram.page_width_px, 8.5 * acceptance.PX)
+        self.assertEqual(diagram.page_height_px, 11.0 * acceptance.PX)
         self.assertEqual([node.id for node in diagram.nodes], [
             "wrapper-a", "wrapper-b", "wrapper-r",
         ])
@@ -750,6 +1041,69 @@ class DrawioAcceptanceHelperTests(unittest.TestCase):
             (diagram.edges[0].source, diagram.edges[0].target),
             ("wrapper-a", "wrapper-b"),
         )
+
+    def test_parser_validates_explicit_page_width_and_height(self):
+        acceptance = self.acceptance()
+        explicit = ACCEPTANCE_XML.replace(
+            '<mxGraphModel pageHeight="1117.6">',
+            '<mxGraphModel pageWidth="1422.4" pageHeight="2336.8">',
+        )
+        diagram = acceptance.parse_drawio_xml_text(explicit)
+        self.assertEqual(diagram.page_width_px, 1422.4)
+        self.assertEqual(diagram.page_height_px, 2336.8)
+
+        for attribute in ('pageWidth="0"', 'pageHeight="-1"'):
+            with self.subTest(attribute=attribute):
+                invalid = explicit.replace(
+                    'pageWidth="1422.4"' if attribute.startswith("pageWidth")
+                    else 'pageHeight="2336.8"',
+                    attribute,
+                )
+                with self.assertRaises(acceptance.AcceptanceError):
+                    acceptance.parse_drawio_xml_text(invalid)
+
+    def test_page_contract_is_strict_by_default_and_tiled_only_when_explicit(self):
+        acceptance = self.acceptance()
+        diagram = acceptance.parse_drawio_xml_text(ACCEPTANCE_XML)
+        data = self.case_data()
+        acceptance.assert_page_contract(data, diagram, tolerance=1.0)
+
+        larger = dict(data)
+        larger["page"] = {"width": 14.0, "height": 23.0}
+        with self.assertRaises(acceptance.AcceptanceError) as strict:
+            acceptance.assert_page_contract(larger, diagram, tolerance=1.0)
+        self.assertIn("page size", str(strict.exception))
+
+        acceptance.assert_page_contract(
+            larger, diagram, tolerance=1.0, allow_tiled_paper=True
+        )
+
+    def test_page_contract_rejects_rotated_nodes_and_edge_terminals_outside_source(self):
+        acceptance = self.acceptance()
+        rotated_outside = ACCEPTANCE_XML.replace(
+            'x="50.8" y="355.6" width="101.6" height="101.6"',
+            'x="-50" y="0" width="101.6" height="101.6"',
+        )
+        with self.assertRaises(acceptance.AcceptanceError) as node_failure:
+            acceptance.assert_page_contract(
+                self.case_data(),
+                acceptance.parse_drawio_xml_text(rotated_outside),
+                tolerance=1.0,
+            )
+        self.assertIn("node", str(node_failure.exception))
+        self.assertIn("page bounds", str(node_failure.exception))
+
+        terminal_outside = ACCEPTANCE_XML.replace(
+            "exitX=1;", "exitX=1;exitDx=-2000;", 1
+        )
+        with self.assertRaises(acceptance.AcceptanceError) as edge_failure:
+            acceptance.assert_page_contract(
+                self.case_data(),
+                acceptance.parse_drawio_xml_text(terminal_outside),
+                tolerance=1.0,
+            )
+        self.assertIn("edge", str(edge_failure.exception))
+        self.assertIn("page bounds", str(edge_failure.exception))
 
     def test_contract_checks_auto_and_explicit_sides_with_independent_target(self):
         acceptance = self.acceptance()
@@ -970,6 +1324,49 @@ class DrawioAcceptanceHelperTests(unittest.TestCase):
                     )
             self.assertFalse(any(path.exists() for path in stale))
 
+    def test_run_case_passes_source_page_dimensions_to_strict_layout_contract(self):
+        acceptance = self.acceptance()
+        commands = []
+
+        def fake_run(command, timeout):
+            commands.append([str(item) for item in command])
+            target = Path(command[3])
+            if str(command[1]).endswith("vsdx_gen.py"):
+                target.write_bytes(b"vsdx")
+            elif str(command[1]).endswith("test_import.py"):
+                target.write_text("<mxGraphModel/>", encoding="utf-8")
+                screenshot_index = command.index("--screenshot") + 1
+                Path(command[screenshot_index]).write_bytes(b"png")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory(
+            prefix="drawio-page-command-", dir=SKILL_ROOT / "tests"
+        ) as temp_dir, \
+                mock.patch.object(acceptance, "run_command", side_effect=fake_run), \
+                mock.patch.object(acceptance, "load_drawio", return_value=object()), \
+                mock.patch.object(acceptance, "assert_case_matches") as contract, \
+                mock.patch.object(acceptance, "assert_png_screenshot"):
+            acceptance.run_case(
+                SKILL_ROOT, Path(temp_dir), "login-flow",
+                "http://127.0.0.1:8080", 10.0,
+            )
+
+        verifier = next(
+            command for command in commands
+            if command[1].endswith("verify_layout.py")
+        )
+        self.assertEqual(
+            verifier[-5:],
+            [
+                "--expect-page-width-in", "8.5",
+                "--expect-page-height-in", "11.0",
+                "--allow-tiled-paper",
+            ],
+        )
+        contract.assert_called_once_with(
+            mock.ANY, mock.ANY, tolerance=1.0, allow_tiled_paper=True
+        )
+
     def test_png_contract_rejects_header_only_and_bad_crc(self):
         acceptance = self.acceptance()
 
@@ -1036,6 +1433,42 @@ class DrawioAcceptanceHelperTests(unittest.TestCase):
         self.assertEqual(
             [call.args for call in sleep.call_args_list],
             [(0.5,), (1.0,)],
+        )
+
+    def test_live_movement_browser_uses_the_same_windows_page_fallback(self):
+        acceptance = self.acceptance()
+        browsers = [mock.Mock(), mock.Mock(), mock.Mock()]
+        for browser in browsers[:2]:
+            browser.new_page.side_effect = RuntimeError(
+                acceptance.PAGE_STARTUP_ERROR
+            )
+        page = object()
+        browsers[2].new_page.return_value = page
+        firefox = mock.Mock()
+        firefox.launch.side_effect = browsers
+
+        with mock.patch.object(acceptance.sys, "platform", "win32"), \
+                mock.patch.dict(acceptance.os.environ, {"KEEP": "1"}, clear=True), \
+                mock.patch.object(acceptance.time, "sleep") as sleep:
+            result = acceptance._open_browser_page(firefox, timeout_ms=120000)
+
+        self.assertEqual(result, (browsers[2], page))
+        self.assertEqual(
+            firefox.launch.call_args_list[:2],
+            [
+                mock.call(headless=True, timeout=120000),
+                mock.call(headless=True, timeout=120000),
+            ],
+        )
+        self.assertEqual(
+            firefox.launch.call_args_list[2].kwargs["env"],
+            {"KEEP": "1", "MOZ_DISABLE_CONTENT_SANDBOX": "1"},
+        )
+        for browser in browsers[:2]:
+            browser.close.assert_called_once_with()
+        self.assertEqual(
+            [call.args for call in sleep.call_args_list],
+            [(0.25,), (0.5,)],
         )
 
     def test_ecommerce_order_distribution_example_contract(self):

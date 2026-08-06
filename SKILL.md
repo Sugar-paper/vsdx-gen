@@ -7,9 +7,9 @@ description: Use when users need Mermaid, structured workflow or architecture de
 
 将图描述（JSON）生成为 Open Packaging 格式的单页 `.vsdx` 文件（ZIP + XML 部件），
 同时满足 Microsoft Visio 与 draw.io 的 VSDX 导入器，保留支持范围内的节点、连接和样式。
-生成器是纯 Python 标准库。已实测：Visio 2016 桌面版可直接打开生成文件（COM 打开，
-1 页/39 形状）；draw.io 31.1.5 四案例导入全部通过。其他 Visio 版本、Office 365 网页版与
-所有 draw.io 版本仍未承诺全兼容。
+生成器是纯 Python 标准库。已实测：Visio 2016 桌面版可通过无头 COM 门禁打开生成文件
+（1 页/39 形状，源哈希未变）；draw.io 31.1.5 四案例导入全部通过。Office 365 网页版、
+其他 Visio 版本与所有 draw.io 版本仍未承诺全兼容。
 
 图片/手绘输入由模型先重建为本技能的 JSON 契约；脚本本身不执行 OCR 或图像矢量化，
 也不解析图片内容。模糊文字、连线关系或无法直接重画的位图/图标，应先向用户确认是近似重画还是省略。
@@ -163,6 +163,10 @@ python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>" --
 导入工具默认访问 `http://127.0.0.1:8080`，并把截图写到输出 XML 同目录；可用
 `--url`、`--timeout`、`--screenshot` 覆盖。
 
+Windows 上若 Playwright 报 `Browser.new_page: Cannot read properties of undefined
+(reading '_page')`（Firefox 标签子进程启动失败），工具会自动重试两次，并在最后一次
+给 Firefox 进程设置 `MOZ_DISABLE_CONTENT_SANDBOX=1`；无关错误不会重试。
+
 **批量导入验证**：
 ```powershell
 python "<skill-dir>\scripts\batch_import.py" "<one.vsdx>" "<two.vsdx>" --output-dir "<result-dir>"
@@ -170,18 +174,29 @@ python "<skill-dir>\scripts\batch_import.py" "<one.vsdx>" "<two.vsdx>" --output-
 
 **布局验证**（在导入验证成功得到 `result.drawio` 后执行；几何级，推荐给复杂图）：
 `<skill-dir>\scripts\verify_layout.py <imported.drawio>` 使用 ElementTree 检查：节点两两不重叠、边线段不穿过
-其他节点、边未绑定、边标签中心不落在节点框内。边界接触和首/末端点接触按 0.5px epsilon 处理，输出每个节点的英寸坐标表。
+其他节点、边未绑定、边标签中心不落在节点框内，并检查节点/边/标签中心是否落在页面内。
+传入 `--expect-page-width-in W --expect-page-height-in H`（默认严格匹配）时按源 JSON 页面尺寸校验；
+显式加 `--allow-tiled-paper` 才允许 draw.io 默认纸张与源尺寸不一致（边界仍按源尺寸检查）。
+边界接触按 0.5px epsilon 处理，输出每个节点的英寸坐标表。
 ```bash
 python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>"
-python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-nodes 2 --expect-edges 1
+python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-nodes 2 --expect-edges 1 --expect-page-width-in 8.5 --expect-page-height-in 11
 ```
+
+**Visio 桌面验收**（本机装有 Visio 2016 时执行；无头 COM，打开后不保存）：
+```powershell
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\scripts\run_visio_acceptance.ps1" -VsdxPath "<output.vsdx>" -ExpectedPages 1 -ExpectedShapes 39
+```
+脚本输出一行 JSON：`exit_code` 0=通过（打开、页数/形状数一致、关闭退出、源 SHA-256 未变），
+1=兼容性失败，2=参数/无 COM/非 STA 环境失败。门禁直接打开原件而不是副本：本机 Visio 2016
+打开字节级副本会卡死（与目录和打开标志无关），原件则立即打开，故用前后哈希保证源文件未改动。
 
 **交付前检查清单**：
 1. `vsdx_gen.py` 输出 `structure OK`（含大小写几何单元格防回归检查）
 2. 若执行 draw.io 集成验证：先确认 `test_import.py` 成功，再运行 `verify_layout.py` 并确认零问题（重叠/穿节点/标签遮挡）；未执行时明确标注未验证
-3. （若环境有 Visio）真机打开一次确认无“修复”弹窗；本技能不把该手工检查替换为自动结论
-   当前技能已用 Visio 2016 桌面版 COM 打开验证（1 页/39 形状）；Office 365 网页上传在修复前
-   失败（报“打包时遇到错误”），修复后未重试时须如实标注
+3. （若环境有 Visio）运行 `run_visio_acceptance.ps1` 并确认 `exit_code` 为 0；退出码 2 时
+   必须如实标注“环境不可用”，不得当作兼容性通过。当前技能已用 Visio 2016 桌面版 COM
+   打开验证（1 页/39 形状）；Office 365 网页上传不在验收范围内
 
 ## 关键实现细节与坑（维护时必读）
 
@@ -230,5 +245,5 @@ python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>"
 - 只生成和验证单页 VSDX；泳道、容器、主题和 Visio master 扩展不在范围内
 - 图片/手绘需要模型人工重建 JSON，不是脚本直接 OCR、识图或矢量化；契约也不包含位图/图标嵌入字段，无法重画的内容必须省略并说明
 - 已实测：Visio 2016 桌面版（64 位）可打开生成文件（1 页/39 形状）；draw.io 31.1.5 四案例导入通过。
-  未覆盖：其他 Visio 版本、Office 365 网页上传（修复前报“打包时遇到错误”，修复后未重试）、
-  其他 draw.io 版本；未实测时不得扩大兼容性结论
+  未覆盖：其他 Visio 版本、Office 365 网页上传（账号/许可环境为已知排除项）、其他 draw.io 版本；
+  未实测时不得扩大兼容性结论

@@ -7,6 +7,7 @@ import base64
 from dataclasses import dataclass, replace
 import json
 import math
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -19,6 +20,7 @@ import zlib
 
 
 PX = 101.6
+BOUNDS_EPSILON_PX = 0.5
 DEFAULT_DRAWIO_URL = "http://127.0.0.1:8080"
 DEFAULT_TIMEOUT = 120.0
 EXAMPLE_NAMES = (
@@ -26,6 +28,9 @@ EXAMPLE_NAMES = (
     "shapes-showcase",
     "ecommerce-order-distribution",
     "stress-flow",
+)
+PAGE_STARTUP_ERROR = (
+    "Browser.new_page: Cannot read properties of undefined (reading '_page')"
 )
 
 Point = Tuple[float, float]
@@ -64,6 +69,7 @@ class ImportedEdge:
 
 @dataclass(frozen=True)
 class ImportedDiagram:
+    page_width_px: float
     page_height_px: float
     nodes: Tuple[ImportedNode, ...]
     edges: Tuple[ImportedEdge, ...]
@@ -171,9 +177,14 @@ def parse_drawio_xml_text(xml):
     graph_root = _direct_child(model, "root")
     if graph_root is None:
         raise AcceptanceError("mxGraphModel is missing root")
+    page_width = _finite_number(
+        model.get("pageWidth", 8.5 * PX), "mxGraphModel pageWidth"
+    )
     page_height = _finite_number(
         model.get("pageHeight", 11.0 * PX), "mxGraphModel pageHeight"
     )
+    if page_width <= 0:
+        raise AcceptanceError("mxGraphModel pageWidth must be positive")
     if page_height <= 0:
         raise AcceptanceError("mxGraphModel pageHeight must be positive")
 
@@ -300,7 +311,12 @@ def parse_drawio_xml_text(xml):
         edges.append(replace(
             edge, source=aliases[edge.source], target=aliases[edge.target]
         ))
-    return ImportedDiagram(page_height, tuple(nodes), tuple(edges))
+    return ImportedDiagram(
+        page_width_px=page_width,
+        page_height_px=page_height,
+        nodes=tuple(nodes),
+        edges=tuple(edges),
+    )
 
 
 def load_drawio(path):
@@ -392,6 +408,83 @@ def terminal_evidence(diagram, edge, source):
     )
 
 
+def _imported_node_polygon(node):
+    left, top, right, bottom = node.box
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    half_width = (right - left) / 2.0
+    half_height = (bottom - top) / 2.0
+    radians = math.radians(node.rotation)
+    cosine = math.cos(radians)
+    sine = math.sin(radians)
+    return tuple(
+        (
+            center_x + x * cosine - y * sine,
+            center_y + x * sine + y * cosine,
+        )
+        for x, y in (
+            (-half_width, -half_height),
+            (half_width, -half_height),
+            (half_width, half_height),
+            (-half_width, half_height),
+        )
+    )
+
+
+def _inside_page(point, width_px, height_px):
+    return (
+        -BOUNDS_EPSILON_PX <= point[0] <= width_px + BOUNDS_EPSILON_PX
+        and -BOUNDS_EPSILON_PX <= point[1] <= height_px + BOUNDS_EPSILON_PX
+    )
+
+
+def assert_page_contract(
+        data, diagram, tolerance=1.0, allow_tiled_paper=False):
+    """Assert imported paper dimensions and source-page geometry bounds."""
+    page = data.get("page") or {}
+    if not isinstance(page, dict):
+        raise AcceptanceError("example page must be an object")
+    width_inches = _finite_number(page.get("width", 8.5), "page width")
+    height_inches = _finite_number(page.get("height", 11.0), "page height")
+    if width_inches <= 0 or height_inches <= 0:
+        raise AcceptanceError("page width and height must be positive")
+    expected_width = width_inches * PX
+    expected_height = height_inches * PX
+    size_matches = (
+        abs(diagram.page_width_px - expected_width) <= tolerance
+        and abs(diagram.page_height_px - expected_height) <= tolerance
+    )
+    if not size_matches and not allow_tiled_paper:
+        raise AcceptanceError(
+            "imported page size differs: expected %.1f x %.1fpx, got %.1f x %.1fpx"
+            % (
+                expected_width,
+                expected_height,
+                diagram.page_width_px,
+                diagram.page_height_px,
+            )
+        )
+
+    for node in diagram.nodes:
+        if any(
+                not _inside_page(point, expected_width, expected_height)
+                for point in _imported_node_polygon(node)):
+            raise AcceptanceError(
+                "imported node %s is outside source page bounds" % node.id
+            )
+
+    for edge in diagram.edges:
+        source, _ = terminal_evidence(diagram, edge, source=True)
+        target, _ = terminal_evidence(diagram, edge, source=False)
+        points = (source,) + tuple(edge.points) + (target,)
+        if any(
+                not _inside_page(point, expected_width, expected_height)
+                for point in points):
+            raise AcceptanceError(
+                "imported edge %s is outside source page bounds" % edge.id
+            )
+
+
 def _close(first, second, tolerance):
     return abs(first - second) <= tolerance
 
@@ -422,7 +515,8 @@ def _indexed_by_vsdx_id(items, kind):
     return result
 
 
-def assert_case_matches(data, diagram, tolerance=1.0):
+def assert_case_matches(
+        data, diagram, tolerance=1.0, allow_tiled_paper=False):
     """Assert counts, bindings, node positions, terminals, and route points."""
     nodes = data.get("nodes")
     edges = data.get("edges", [])
@@ -430,6 +524,12 @@ def assert_case_matches(data, diagram, tolerance=1.0):
     if not isinstance(nodes, list) or not isinstance(edges, list):
         raise AcceptanceError("example nodes and edges must be arrays")
     page_height = _finite_number(page.get("height", 11.0), "page height")
+    assert_page_contract(
+        data,
+        diagram,
+        tolerance=tolerance,
+        allow_tiled_paper=allow_tiled_paper,
+    )
     if len(diagram.nodes) != len(nodes) or len(diagram.edges) != len(edges):
         raise AcceptanceError(
             "imported counts differ: expected %d/%d, got %d/%d"
@@ -771,15 +871,55 @@ def _load_playwright():
     return sync_playwright
 
 
-def _launch_firefox(firefox, timeout_ms):
+def _launch_firefox(firefox, timeout_ms, env=None):
     """Retry only Windows' transient spawn EBUSY launch failure."""
+    launch_options = {"headless": True, "timeout": timeout_ms}
+    if env is not None:
+        launch_options["env"] = env
     for attempt in range(3):
         try:
-            return firefox.launch(headless=True, timeout=timeout_ms)
+            return firefox.launch(**launch_options)
         except Exception as error:
             if "EBUSY" not in str(error).upper() or attempt == 2:
                 raise
             time.sleep(0.5 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def _is_page_startup_error(error):
+    return str(error) == PAGE_STARTUP_ERROR
+
+
+def _close_browser(browser):
+    try:
+        browser.close()
+    except Exception:
+        pass
+
+
+def _open_browser_page(firefox, timeout_ms):
+    """Create a Firefox page with the bounded Windows startup fallback."""
+    attempts = 3 if sys.platform == "win32" else 2
+    for attempt in range(attempts):
+        options = None
+        if attempt == 2:
+            options = os.environ.copy()
+            options["MOZ_DISABLE_CONTENT_SANDBOX"] = "1"
+            print(
+                "warning: Firefox page startup failed; using "
+                "MOZ_DISABLE_CONTENT_SANDBOX=1 for the final attempt",
+                file=sys.stderr,
+            )
+        browser = _launch_firefox(firefox, timeout_ms, env=options)
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+        except Exception as error:
+            _close_browser(browser)
+            if not _is_page_startup_error(error) or attempt + 1 == attempts:
+                raise
+            time.sleep(0.25 if attempt == 0 else 0.5)
+        else:
+            return browser, page
     raise AssertionError("unreachable")
 
 
@@ -900,8 +1040,7 @@ def run_live_movement(
             executable = Path(playwright.firefox.executable_path)
             if not executable.is_file():
                 raise AcceptanceError("Playwright Firefox is not installed: %s" % executable)
-            browser = _launch_firefox(playwright.firefox, timeout_ms)
-            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            browser, page = _open_browser_page(playwright.firefox, timeout_ms)
             page.set_default_timeout(timeout_ms)
             page.set_default_navigation_timeout(timeout_ms)
             page.goto(drawio_url, timeout=timeout_ms, wait_until="load")
@@ -1018,10 +1157,7 @@ def run_live_movement(
         raise AcceptanceError("live movement check failed: %s" % error) from None
     finally:
         if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
+            _close_browser(browser)
 
     result = MovementResult(
         source_bounds_delta=(
@@ -1078,6 +1214,9 @@ def run_case(skill_root, output_dir, name, drawio_url, timeout):
     data = _load_example(example)
     node_count = len(data["nodes"])
     edge_count = len(data.get("edges", []))
+    page = data.get("page") or {}
+    page_width = _finite_number(page.get("width", 8.5), "page width")
+    page_height = _finite_number(page.get("height", 11.0), "page height")
     vsdx_path = output_dir / (name + ".vsdx")
     drawio_path = output_dir / (name + ".drawio")
     screenshot_path = output_dir / (name + ".png")
@@ -1105,11 +1244,16 @@ def run_case(skill_root, output_dir, name, drawio_url, timeout):
             sys.executable, str(verifier), str(drawio_path),
             "--expect-nodes", str(node_count),
             "--expect-edges", str(edge_count),
+            "--expect-page-width-in", str(page_width),
+            "--expect-page-height-in", str(page_height),
+            "--allow-tiled-paper",
         ],
         timeout,
     )
     diagram = load_drawio(drawio_path)
-    assert_case_matches(data, diagram, tolerance=1.0)
+    assert_case_matches(
+        data, diagram, tolerance=1.0, allow_tiled_paper=True
+    )
     if name == "shapes-showcase":
         assert_showcase_stencils(diagram)
     for path in (vsdx_path, drawio_path, screenshot_path):
@@ -1134,7 +1278,7 @@ def _unit_only(skill_root, output_dir):
     data = {
         "page": {"width": 8.5, "height": 11.0},
         "nodes": [
-            {"id": "A", "x": -0.5, "y": 9.5, "w": 1.0, "h": 1.0},
+            {"id": "A", "x": 0.5, "y": 9.5, "w": 1.0, "h": 1.0},
             {"id": "B", "x": 2.5, "y": 9.5, "w": 1.0, "h": 1.0},
         ],
         "edges": [

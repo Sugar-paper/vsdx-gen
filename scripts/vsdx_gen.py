@@ -68,6 +68,7 @@ import errno
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import sys
@@ -1532,6 +1533,7 @@ def generate(data, out_path):
                 )
         errors = validate(
             temp_path,
+            expected_node_count=len(nodes),
             expected_connector_semantics=expected_connector_semantics,
         )
         if errors:
@@ -2073,6 +2075,141 @@ def _validate_page_index_contract(pages):
     return errors
 
 
+def _validate_page_relationship_contract(pages, page_relationships, part_names):
+    """Validate the one pages.xml r:id against its package relationship."""
+    errors = []
+    page_elements = pages.findall(V('Page'))
+    if len(page_elements) != 1:
+        errors.append('pages.xml must contain exactly one direct Page element')
+        return errors
+    page = page_elements[0]
+    rel_elements = page.findall(V('Rel'))
+    if len(rel_elements) != 1:
+        errors.append('pages.xml Page must contain exactly one direct Rel element')
+        return errors
+    relationship_id = rel_elements[0].get(RID_ATTR)
+    if not relationship_id:
+        errors.append('pages.xml Page Rel is missing r:id')
+        return errors
+
+    by_id = {}
+    for relationship in page_relationships.findall(REL('Relationship')):
+        rel_id = relationship.get('Id')
+        if not rel_id:
+            errors.append('pages.xml.rels has a relationship without Id')
+            continue
+        by_id.setdefault(rel_id, []).append(relationship)
+    for rel_id, matches in sorted(by_id.items()):
+        if len(matches) > 1:
+            errors.append('pages.xml.rels has duplicate relationship Id %s' % rel_id)
+
+    matches = by_id.get(relationship_id, [])
+    if len(matches) != 1:
+        errors.append('pages.xml Page r:id %s does not resolve exactly once' % relationship_id)
+        return errors
+    relationship = matches[0]
+    if relationship.get('TargetMode') not in (None, 'Internal'):
+        errors.append('pages.xml relationship %s must be internal' % relationship_id)
+    if not relationship.get('Type', '').endswith('/page'):
+        errors.append('pages.xml relationship %s type must end with /page' % relationship_id)
+
+    target = relationship.get('Target')
+    if not target:
+        errors.append('pages.xml relationship %s is missing Target' % relationship_id)
+        return errors
+    if target.startswith('/') or '\\' in target:
+        errors.append(
+            'pages.xml relationship %s Target must be a forward-slash relative path'
+            % relationship_id
+        )
+        return errors
+    resolved_target = posixpath.normpath(posixpath.join('visio/pages', target))
+    if not resolved_target.startswith('visio/pages/'):
+        errors.append(
+            'pages.xml relationship %s Target escapes visio/pages' % relationship_id
+        )
+        return errors
+    if resolved_target != 'visio/pages/page1.xml':
+        errors.append(
+            'pages.xml relationship %s must resolve to visio/pages/page1.xml'
+            % relationship_id
+        )
+    if resolved_target not in part_names:
+        errors.append(
+            'pages.xml relationship %s resolves to missing part %s'
+            % (relationship_id, resolved_target)
+        )
+    return errors
+
+
+def _validate_page_contents_contract(page, expected_node_count=None):
+    """Validate the deliberately narrow, generated single-page content shape."""
+    errors = []
+    if page.tag != V('PageContents'):
+        errors.append('visio/pages/page1.xml root must be PageContents')
+        return errors
+    expected_children = (V('Shapes'), V('Connects'))
+    if tuple(child.tag for child in page) != expected_children:
+        errors.append(
+            'visio/pages/page1.xml direct children must be Shapes, Connects'
+        )
+        return errors
+
+    shapes_element, connects_element = list(page)
+    direct_shapes = shapes_element.findall(V('Shape'))
+    if not direct_shapes:
+        errors.append(
+            'visio/pages/page1.xml Shapes must contain at least one direct Shape'
+        )
+    if any(child.tag != V('Shape') for child in shapes_element):
+        errors.append('visio/pages/page1.xml Shapes may contain only direct Shape elements')
+
+    shape_ids = []
+    valid_shape_ids = set()
+    for shape in direct_shapes:
+        sid = shape.get('ID')
+        if sid is None or re.fullmatch(r'[1-9][0-9]*', sid) is None:
+            errors.append(
+                'visio/pages/page1.xml Shape ID %s must be a positive decimal integer'
+                % _xml_metadata_display(sid)
+            )
+            continue
+        shape_ids.append(sid)
+        valid_shape_ids.add(sid)
+    duplicate_ids = sorted({sid for sid in shape_ids if shape_ids.count(sid) > 1})
+    if duplicate_ids:
+        errors.append('duplicate shape IDs: %s' % duplicate_ids)
+
+    connector_ids = {
+        shape.get('ID') for shape in direct_shapes
+        if shape.get('NameU') == 'Connector' and shape.get('ID') in valid_shape_ids
+    }
+    node_ids = valid_shape_ids - connector_ids
+    if expected_node_count is not None:
+        if not isinstance(expected_node_count, int) or expected_node_count < 1:
+            errors.append('expected_node_count must be a positive integer')
+        else:
+            expected_ids = {str(value) for value in range(1, expected_node_count + 1)}
+            if node_ids != expected_ids:
+                errors.append(
+                    'non-connector shape IDs %s do not match expected 1..%d'
+                    % (sorted(node_ids), expected_node_count)
+                )
+
+    connect_records = connects_element.findall(V('Connect'))
+    if connector_ids and not connect_records:
+        errors.append(
+            'visio/pages/page1.xml Connects is empty but page has connector shapes'
+        )
+    if not connector_ids and connect_records:
+        errors.append(
+            'visio/pages/page1.xml Connects must be empty when page has no connector shapes'
+        )
+    if any(child.tag != V('Connect') for child in connects_element):
+        errors.append('visio/pages/page1.xml Connects may contain only direct Connect elements')
+    return errors
+
+
 def _validate_character_fonts(page, declared_fonts):
     errors = []
     declared = set(declared_fonts)
@@ -2163,7 +2300,7 @@ def _validate_shape_colors(page):
 
 
 def validate(out_path, expected_connector_count=None,
-             expected_connector_semantics=None):
+             expected_connector_semantics=None, expected_node_count=None):
     """Structural + semantic checks on the generated package."""
     errors = []
     with zipfile.ZipFile(out_path) as zf:
@@ -2228,6 +2365,12 @@ def validate(out_path, expected_connector_count=None,
             errors.extend(_validate_page_index_contract(
                 parsed_parts['visio/pages/pages.xml']
             ))
+        if 'visio/pages/pages.xml' in parsed_parts and \
+                'visio/pages/_rels/pages.xml.rels' in parsed_parts:
+            errors.extend(_validate_page_relationship_contract(
+                parsed_parts['visio/pages/pages.xml'],
+                parsed_parts['visio/pages/_rels/pages.xml.rels'], name_set,
+            ))
         declared_fonts = None
         if 'visio/document.xml' in parsed_parts:
             declared_fonts = [
@@ -2247,6 +2390,11 @@ def validate(out_path, expected_connector_count=None,
         if 'visio/pages/page1.xml' in parsed_parts:
             errors.extend(_validate_shape_colors(
                 parsed_parts['visio/pages/page1.xml']
+            ))
+        if 'visio/pages/page1.xml' in parsed_parts:
+            errors.extend(_validate_page_contents_contract(
+                parsed_parts['visio/pages/page1.xml'],
+                expected_node_count=expected_node_count,
             ))
         # PageSheet must carry PageWidth/PageHeight for coordinate conversion
         if 'visio/pages/pages.xml' in parsed_parts:
