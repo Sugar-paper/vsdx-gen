@@ -1,96 +1,47 @@
 # vsdx-gen
 
-把 JSON 流程图契约生成可被 Microsoft Visio 与 draw.io 打开的单页 `.vsdx`，并附带
-结构校验、draw.io 导入回归和 Visio 桌面验收门禁。生成器只使用 Python 标准库，
-可离线运行。
+一个给大模型用的技能：把“一段描述 / 一张示意图”直接变成**可打开、可继续编辑的
+Microsoft Visio 文件（.vsdx）**，并负责证明生成的文件真的能被 Visio 和 draw.io 打开。
 
-已实测：Visio 2016 桌面版（无头 COM 门禁：1 页 / 39 形状，源文件哈希未变）与
-draw.io 31.1.5（四案例导入全部通过）。Office 365 网页版因账号/许可环境被排除，
-其他 Visio/draw.io 版本未承诺全兼容。
+## 这是什么
 
-## 目录结构
+`vsdx-gen` 是一个 Codex 等大模型可调用的技能。模型把用户意图整理成结构化的 JSON
+流程图契约，技能里的纯 Python 脚本（零第三方依赖）把它生成标准单页 `.vsdx`。
 
-```text
-examples/     JSON 示例（login-flow、shapes-showcase、ecommerce-order-distribution、stress-flow）
-scripts/      生成器与验证脚本
-tests/        单元测试与 draw.io 验收运行器
-SKILL.md      技能说明（Codex 技能入口）
-使用说明.md    中文使用文档
-```
+技能内置三套验证，不是“生成完就算完”：
 
-## 快速开始
+- 结构校验：ZIP/XML、部件、页面关系、形状与连线语义；
+- draw.io 真实导入回归：浏览器里导入再导出，核对节点/边/坐标/绑定；
+- Visio 桌面验收门禁：真实 Visio 2016 打开，核对页数和形状数，并确认源文件未被改动。
 
-生成 VSDX（生成前自动做输入校验，错误信息为中文）：
+## 配合大模型能做什么
 
-```bash
-python "<skill-dir>\scripts\vsdx_gen.py" "<input.json>" "<output.vsdx>"
-```
+- 你说“帮我画一个电商订单分发流程”，模型整理 JSON，技能直接产出 Visio 图；
+- 你贴一张手绘/截图，模型重建为 JSON 后生成可编辑工程图；
+- 生成后可继续对话迭代：改布局、加节点、换样式，重新生成即可；
+- 同一输入生成结果字节级一致，方便纳入版本管理反复对比。
 
-布局验证（检查节点重叠、边穿节点、边未绑定、标签遮挡与页面越界）：
+## 解决什么问题
 
-```bash
-python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-nodes 2 --expect-edges 1
-```
+- 大模型原生输出是文本或 Mermaid，不能直接变成 Visio 工程图，手工重画成本高；
+- 常见的自研 VSDX 生成器产出的文件打不开（Visio 报“某些部分丢失或无效”），
+  本技能补齐 Visio 必需部件并做严格校验，确保真能打开；
+- 生成工具往往“自说自话”，本技能用真实软件打开做验收，把兼容性变成可复现的证据。
 
-按源 JSON 页面尺寸严格校验（容差 1px；显式加 `--allow-tiled-paper` 才允许
-draw.io 默认纸张与源尺寸不一致）：
+## 效果怎么样
 
-```bash
-python "<skill-dir>\scripts\verify_layout.py" "<result.drawio>" --expect-page-width-in 8.5 --expect-page-height-in 11
-```
+- **Visio 2016 桌面版**：真实打开 1 页 / 39 形状，验收门禁 exit 0，源文件哈希未变；
+- **draw.io 31.1.5**：登录流程、形状展示、电商订单分发（14×23 英寸）、压力流程
+  （50 节点）四个案例全部导入通过，连线移动后绑定保持正确；
+- **确定性**：同一 JSON 两次生成 SHA-256 完全一致；
+- **质量护栏**：198 项单元测试全绿；布局验证可查出节点重叠、边穿节点、标签遮挡与
+  页面越界。
 
-## draw.io 导入回归（可选）
-
-需要本地 draw.io webapp、Playwright 与 Firefox：
-
-```powershell
-python -m pip install playwright
-python -m playwright install firefox
-Set-Location "<drawio-webapp-dir>"
-python -m http.server 8080 --bind 127.0.0.1
-```
+## 快速上手
 
 ```bash
-python "<skill-dir>\scripts\test_import.py" "<output.vsdx>" "<result.drawio>" --expect-nodes 2 --expect-edges 1
+python scripts/vsdx_gen.py "<input.json>" "<output.vsdx>"
 ```
 
-Windows 上若遇到 `Browser.new_page: Cannot read properties of undefined (reading '_page')`，
-工具会自动重试并在最后一次为 Firefox 设置 `MOZ_DISABLE_CONTENT_SANDBOX=1`。
-
-## Visio 桌面验收（本机装有 Visio 2016 时）
-
-```powershell
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\scripts\run_visio_acceptance.ps1" -VsdxPath "<output.vsdx>" -ExpectedPages 1 -ExpectedShapes 39
-```
-
-输出一行 JSON：`exit_code` 0=通过，1=兼容性失败，2=参数/COM 不可用/非 STA 环境。
-门禁以无头 COM 直接打开原件（不做副本），不保存关闭，并用打开前后的 SHA-256
-确认源文件未被改动。
-
-## JSON 契约速览
-
-- 单位是英寸，坐标 Y 向上，`x`/`y` 是节点中心；页面默认 8.5×11
-- 顶层只能有 `page`、`nodes`、`edges`；`nodes` 非空，`edges` 可省略
-- 节点 `id/x/y/w/h` 必填，所有数字必须有限；边 `from/to` 必须引用现有节点
-- 边可选 `routing`：`auto` / `straight` / `elbow`；显式 `points` 优先
-
-## 退出码
-
-| 工具 | 0 | 1 | 2 |
-| --- | --- | --- | --- |
-| 生成器 | 成功 | 包结构/语义校验失败 | 输入/参数/文件错误 |
-| 布局验证 | 通过 | 发现布局问题 | 参数/文件/XML 错误 |
-| 单文件导入 | 通过 | 服务/浏览器/导入/验证失败 | 参数/依赖/文件错误 |
-| Visio 验收 | 通过 | 打开/计数/哈希等失败 | 参数/COM 不可用/非 STA |
-
-## 测试
-
-```bash
-python -B -m unittest discover -s tests -p "test_*.py"
-```
-
-## 已知边界
-
-- 只生成和验证单页 VSDX；泳道、容器、主题和 Visio master 扩展不在范围内
-- 图片/手绘需要模型先重建为 JSON，脚本不直接 OCR 或矢量化
-- 未实测的 Visio/draw.io 版本不得扩大兼容性结论
+示例输入见 `examples/`（login-flow、shapes-showcase、ecommerce-order-distribution、
+stress-flow）；完整用法、JSON 契约与退出码见 `使用说明.md` 和 `SKILL.md`。
