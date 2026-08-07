@@ -760,7 +760,20 @@ _SHAPE_GEO = {
 }
 
 
-def _geom_section(rows, no_fill=0):
+def _geometry_formula(axis, value, dimension):
+    """Map an exact X/Y coordinate to Visio's Width*/Height* formula."""
+    if dimension is None:
+        return None
+    if value == 0:
+        return '%s*0' % axis
+    if value == dimension:
+        return '%s*1' % axis
+    if value == dimension / 2.0:
+        return '%s*0.5' % axis
+    return None
+
+
+def _geom_section(rows, no_fill=0, width=None, height=None):
     """rows: list of (rowType, cells) where cells is one of:
        - dict {cellName: value}               (custom geometry JSON)
        - list of (name, value) pairs          (normalized custom geometry)
@@ -769,6 +782,18 @@ def _geom_section(rows, no_fill=0):
     """
     geom = _el(V('Section'), N='Geometry', IX='0')
     geom.append(_cell('NoFill', no_fill))
+
+    def add_cell(row, name, val):
+        formula = None
+        if name == 'X' and width is not None:
+            formula = _geometry_formula('Width', float(val), width)
+        elif name == 'Y' and height is not None:
+            formula = _geometry_formula('Height', float(val), height)
+        if formula is not None:
+            row.append(_cell_formula(name, val, formula))
+        else:
+            row.append(_cell(name, val))
+
     for ix, (rtype, cells) in enumerate(rows, start=1):
         row = _el(V('Row'), T=rtype, IX=str(ix))
         if isinstance(cells, dict):
@@ -778,15 +803,15 @@ def _geom_section(rows, no_fill=0):
         if cells and isinstance(cells[0], (list, tuple)) \
                 and isinstance(cells[0][0], str):
             for name, val in cells:
-                row.append(_cell(name, val))
+                add_cell(row, name, val)
         elif cells and isinstance(cells[0], (list, tuple)):
             # built-in builders pass [(x, y, ...)]: flatten the point tuple
             vals = [v for t in cells for v in t]
             for name, val in zip(_ROW_CELLS[rtype], vals):
-                row.append(_cell(name, val))
+                add_cell(row, name, val)
         else:
             for name, val in zip(_ROW_CELLS[rtype], cells):
-                row.append(_cell(name, val))
+                add_cell(row, name, val)
         geom.append(row)
     return geom
 
@@ -803,9 +828,9 @@ def _node_geometry(n, w, h):
             else:
                 cells = vals
             rows.append((rtype, cells))
-        return _geom_section(rows)
+        return _geom_section(rows, width=w, height=h)
     builder = _SHAPE_GEO.get(n.get('type', 'rect'), _geo_rows_rect)
-    return _geom_section(builder(w, h))
+    return _geom_section(builder(w, h), width=w, height=h)
 
 
 def _char_section(font_name, size_in, color_idx, style_bits=0):
@@ -853,10 +878,16 @@ def _build_shape(n, sid, palette):
     # LocPin = 局部旋转/缩放中心；draw.io 导入器用它把 Pin（中心）换算成
     # 左上角: x = PinX - LocPinX, y = pageH - (PinY + h - LocPinY)。
     # 缺失时导入器按 0 处理，形状会整体偏右 w/2、偏上 h/2。
-    shape.append(_cell('LocPinX', w / 2))
-    shape.append(_cell('LocPinY', h / 2))
+    shape.append(_cell_formula('LocPinX', w / 2, 'Width*0.5'))
+    shape.append(_cell_formula('LocPinY', h / 2, 'Height*0.5'))
     shape.append(_cell('Width', w))
     shape.append(_cell('Height', h))
+    # Mirror Visio's native 2-D shape cells so the shape keeps its box resize
+    # handles (hardcoded-only shapes can lose them and look text-box-like).
+    shape.append(_cell('Angle', 0))
+    shape.append(_cell('FlipX', 0))
+    shape.append(_cell('FlipY', 0))
+    shape.append(_cell('ResizeMode', 0))
     if n.get('rotation'):
         shape.append(_cell('Angle', math.radians(float(n['rotation']))))
 

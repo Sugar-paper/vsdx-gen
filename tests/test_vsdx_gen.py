@@ -2410,6 +2410,28 @@ class EdgeSemanticsTests(unittest.TestCase):
             cell = node.find("%s[@N='%s']" % (vsdx_gen.V("Cell"), cell_name))
             self.assertIsNotNone(cell, cell_name)
             self.assertEqual(cell.get("F"), formula)
+        self.assertEqual(self.cell_value(node, "Angle"), 0.0)
+        self.assertEqual(self.cell_value(node, "FlipX"), 0.0)
+        self.assertEqual(self.cell_value(node, "FlipY"), 0.0)
+        self.assertEqual(self.cell_value(node, "ResizeMode"), 0.0)
+        for cell_name, formula in (
+                ("LocPinX", "Width*0.5"),
+                ("LocPinY", "Height*0.5")):
+            cell = node.find("%s[@N='%s']" % (vsdx_gen.V("Cell"), cell_name))
+            self.assertEqual(cell.get("F"), formula)
+
+        geometry = node.find("%s[@N='Geometry']" % vsdx_gen.V("Section"))
+        line_to = geometry.find(
+            "%s[@IX='2']" % vsdx_gen.V("Row")
+        )
+        x_cell = line_to.find(
+            "%s[@N='X']" % vsdx_gen.V("Cell")
+        )
+        y_cell = line_to.find(
+            "%s[@N='Y']" % vsdx_gen.V("Cell")
+        )
+        self.assertEqual(x_cell.get("F"), "Width*1")
+        self.assertEqual(y_cell.get("F"), "Height*0")
 
     @staticmethod
     def geometry_points(connector):

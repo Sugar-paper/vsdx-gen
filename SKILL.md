@@ -226,6 +226,11 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\script
     文本块时可能让文字脱出图形、看起来像独立文本框，导致图形不可选中缩放。F 公式必须
     恰好是这四组 `Width*`/`Height*` 组合：draw.io 的 `isDisplacedLabel()` 据此判断是否把
     标签拆成独立子形状（写别的公式就会在 draw.io 里出现独立文本框）
+16. **节点几何要用 Width/Height 公式并补齐原生单元格**：Visio 2016 对纯硬编码几何的图形
+    可能不显示盒状缩放手柄（拖动只改文本框）。内置形状的 X/Y 坐标必须映射为
+    `Width*0 / Width*0.5 / Width*1`（Y 对应 `Height*`），并写出 `Angle/FlipX/FlipY/
+    ResizeMode` 与公式化 `LocPinX/Y`，与 Visio 自绘矩形结构一致；draw.io 几何行只读 V
+    属性，加 F 公式不影响导入
 
 ## 使用示例
 
