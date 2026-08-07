@@ -891,6 +891,18 @@ def _build_shape(n, sid, palette):
     shape.append(_char_section(font, size_in, font_color, style_bits))
     shape.append(_para_section({'left': 0, 'center': 1, 'right': 2}
                                .get(n.get('align', 'center'), 1)))
+    # Explicitly pin the text block to the shape bounds. Visio otherwise
+    # auto-fits the block, which can detach the label from the shape for some
+    # shape types/versions and make the shape appear non-resizable. The F
+    # formulas must stay exactly Width*0.5/Height*0.5/Width*1/Height*1 so
+    # draw.io's isDisplacedLabel() keeps the label inline inside the vertex.
+    shape.append(_cell_formula('TxtPinX', round(w / 2.0, 4), 'Width*0.5'))
+    shape.append(_cell_formula('TxtPinY', round(h / 2.0, 4), 'Height*0.5'))
+    shape.append(_cell_formula('TxtWidth', round(w, 4), 'Width*1'))
+    shape.append(_cell_formula('TxtHeight', round(h, 4), 'Height*1'))
+    shape.append(_cell_formula('TxtLocPinX', round(w / 2.0, 4), 'TxtWidth*0.5'))
+    shape.append(_cell_formula('TxtLocPinY', round(h / 2.0, 4), 'TxtHeight*0.5'))
+    shape.append(_cell('TxtAngle', 0))
     text = _el(V('Text'))
     text.text = n.get('text', '')
     shape.append(text)

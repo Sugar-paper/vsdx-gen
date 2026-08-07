@@ -221,6 +221,11 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\script
     `TxtWidth=TEXTWIDTH(TheText)`、`TxtHeight=TEXTHEIGHT(TheText,TxtWidth)`、居中 LocPin
     （`TxtLocPinX/Y=Txt*0.5`）与 `TxtAngle=0`；draw.io 只读 V 属性，所以 V 要写合理估算值。
     生成器的 `_estimate_label_width()` 与相关测试已锁定该契约
+15. **节点文本块要显式钉在图形边界内**：节点必须写 `TxtPinX/Y=Width*0.5/Height*0.5`、
+    `TxtWidth/Height=Width*1/Height*1`、居中 LocPin 与 `TxtAngle=0`，否则 Visio 自动适配
+    文本块时可能让文字脱出图形、看起来像独立文本框，导致图形不可选中缩放。F 公式必须
+    恰好是这四组 `Width*`/`Height*` 组合：draw.io 的 `isDisplacedLabel()` 据此判断是否把
+    标签拆成独立子形状（写别的公式就会在 draw.io 里出现独立文本框）
 
 ## 使用示例
 

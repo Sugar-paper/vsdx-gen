@@ -2383,6 +2383,34 @@ class EdgeSemanticsTests(unittest.TestCase):
         self.assertEqual(self.cell_value(connector, "TxtPinX"), 1.5)
         self.assertEqual(self.cell_value(connector, "TxtPinY"), 1.0)
 
+    def test_node_text_block_is_pinned_to_shape_bounds(self):
+        page = self.page({
+            "nodes": [
+                dict(self.node("A", 2.0, 3.0, w=2.0, h=1.0), text="Label"),
+            ],
+            "edges": [],
+        })
+        node = page.find(".//%s[@ID='1']" % vsdx_gen.V("Shape"))
+        self.assertEqual(self.cell_value(node, "TxtPinX"), 1.0)
+        self.assertEqual(self.cell_value(node, "TxtPinY"), 0.5)
+        self.assertEqual(self.cell_value(node, "TxtWidth"), 2.0)
+        self.assertEqual(self.cell_value(node, "TxtHeight"), 1.0)
+        self.assertEqual(self.cell_value(node, "TxtLocPinX"), 1.0)
+        self.assertEqual(self.cell_value(node, "TxtLocPinY"), 0.5)
+        self.assertEqual(self.cell_value(node, "TxtAngle"), 0.0)
+        expected_formulas = {
+            "TxtPinX": "Width*0.5",
+            "TxtPinY": "Height*0.5",
+            "TxtWidth": "Width*1",
+            "TxtHeight": "Height*1",
+            "TxtLocPinX": "TxtWidth*0.5",
+            "TxtLocPinY": "TxtHeight*0.5",
+        }
+        for cell_name, formula in expected_formulas.items():
+            cell = node.find("%s[@N='%s']" % (vsdx_gen.V("Cell"), cell_name))
+            self.assertIsNotNone(cell, cell_name)
+            self.assertEqual(cell.get("F"), formula)
+
     @staticmethod
     def geometry_points(connector):
         geometry = connector.find(
