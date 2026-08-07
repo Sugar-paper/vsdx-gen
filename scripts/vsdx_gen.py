@@ -828,6 +828,20 @@ def _para_section(horz_align):
     return sec
 
 
+def _estimate_label_width(label, size_in):
+    """Approximate rendered text width in inches for draw.io's V read."""
+    width = 0.0
+    for character in label:
+        codepoint = ord(character)
+        if 0x2E80 <= codepoint <= 0x9FFF or \
+                0xF900 <= codepoint <= 0xFAFF or \
+                0xFF00 <= codepoint <= 0xFFEF:
+            width += size_in
+        else:
+            width += size_in * 0.55
+    return max(width + size_in * 0.5, size_in * 2.0)
+
+
 def _build_shape(n, sid, palette):
     w, h = float(n['w']), float(n['h'])
     shape_type = n.get('type', 'rect')
@@ -1135,10 +1149,27 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
         shape.append(_cell(
             'TxtPinY', round(label_point[1] - by, 4)
         ))
-        for cell_name in ('TxtLocPinX', 'TxtLocPinY', 'TxtWidth', 'TxtHeight'):
-            shape.append(_cell(cell_name, 0))
         font = e.get('fontFamily', 'Microsoft YaHei')
         size_in = round(float(e.get('fontSize', 9)) / 72.0, 4)
+        # Match Visio's Dynamic Connector text block: auto-size formulas with
+        # centered loc pins. A zero-size block makes Visio wrap every character
+        # onto its own line (vertical label), and negative Width/Height mirror
+        # the text. draw.io reads only the V values, so keep V sane.
+        txt_width = round(_estimate_label_width(e['label'], size_in), 4)
+        txt_height = round(size_in * 1.2, 4)
+        shape.append(_cell_formula(
+            'TxtWidth', txt_width, 'MAX(TEXTWIDTH(TheText),5*Char.Size)'
+        ))
+        shape.append(_cell_formula(
+            'TxtHeight', txt_height, 'TEXTHEIGHT(TheText,TxtWidth)'
+        ))
+        shape.append(_cell_formula(
+            'TxtLocPinX', round(txt_width / 2.0, 4), 'TxtWidth*0.5'
+        ))
+        shape.append(_cell_formula(
+            'TxtLocPinY', round(txt_height / 2.0, 4), 'TxtHeight*0.5'
+        ))
+        shape.append(_cell('TxtAngle', 0))
         lc = (e.get('labelColor') or '#000000').upper()
         shape.append(_char_section(font, size_in, lc))
         text = _el(V('Text'))

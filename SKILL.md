@@ -216,6 +216,11 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\script
     生成器必须输出该部件、在 `[Content_Types].xml` 声明 `application/vnd.ms-visio.windows+xml`，
     并在 `visio/_rels/document.xml.rels` 增加 rId2（类型 .../relationships/windows）。参考项目
     IoTServ/visioeditor 的最小结构漏掉此部件，其自产文件同样打不开；`validate()` 已加防回归检查
+14. **连接线文本块不能写零宽**：`TxtWidth/TxtHeight=0` 会让 Visio 2016 把每个字符换行成垂直堆叠
+    （看起来像竖排文字，切换文字方向又变成镜像横排）。必须仿照官方 Dynamic Connector 写
+    `TxtWidth=TEXTWIDTH(TheText)`、`TxtHeight=TEXTHEIGHT(TheText,TxtWidth)`、居中 LocPin
+    （`TxtLocPinX/Y=Txt*0.5`）与 `TxtAngle=0`；draw.io 只读 V 属性，所以 V 要写合理估算值。
+    生成器的 `_estimate_label_width()` 与相关测试已锁定该契约
 
 ## 使用示例
 

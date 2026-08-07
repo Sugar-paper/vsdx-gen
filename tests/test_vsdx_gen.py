@@ -2338,8 +2338,31 @@ class EdgeSemanticsTests(unittest.TestCase):
 
         self.assertEqual(self.cell_value(connector, "TxtPinX"), 1.5)
         self.assertEqual(self.cell_value(connector, "TxtPinY"), 2.0)
-        for cell_name in ("TxtLocPinX", "TxtLocPinY", "TxtWidth", "TxtHeight"):
-            self.assertEqual(self.cell_value(connector, cell_name), 0.0)
+        for cell_name in ("TxtWidth", "TxtHeight", "TxtLocPinX", "TxtLocPinY"):
+            self.assertGreater(self.cell_value(connector, cell_name), 0.0)
+        self.assertEqual(self.cell_value(connector, "TxtAngle"), 0.0)
+        expected_formulas = {
+            "TxtWidth": "MAX(TEXTWIDTH(TheText),5*Char.Size)",
+            "TxtHeight": "TEXTHEIGHT(TheText,TxtWidth)",
+            "TxtLocPinX": "TxtWidth*0.5",
+            "TxtLocPinY": "TxtHeight*0.5",
+        }
+        for cell_name, formula in expected_formulas.items():
+            cell = connector.find(
+                "%s[@N='%s']" % (vsdx_gen.V("Cell"), cell_name)
+            )
+            self.assertIsNotNone(cell, cell_name)
+            self.assertEqual(cell.get("F"), formula)
+        self.assertAlmostEqual(
+            self.cell_value(connector, "TxtLocPinX"),
+            self.cell_value(connector, "TxtWidth") / 2.0,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            self.cell_value(connector, "TxtLocPinY"),
+            self.cell_value(connector, "TxtHeight") / 2.0,
+            places=3,
+        )
 
     def test_connector_label_pin_is_relative_to_begin_for_diagonal_edge(self):
         page = self.page({
