@@ -1150,7 +1150,10 @@ def _build_edge(e, sid, palette, source_sid, target_sid, begin, end):
     ))
     for cname, cval in (
             ('GlueType', 2), ('ConFixedCode', 3), ('DynFeedback', 2),
-            ('NoLiveDynamics', 1), ('ConLineRouteExt', 1),
+            ('NoLiveDynamics', 1),
+            # Routing disabled: Visio's own right-angle router hugs node edges
+            # when shapes move; the authored polyline must stay as-written.
+            ('ConLineRouteExt', 0),
             ('ShapeRouteStyle', 16), ('FillPattern', 0),
             ('ObjType', 2), ('NoAlignBox', 1), ('ShapeSplittable', 1),
             ('IsTextEditTarget', 0), ('DontMoveChildren', 0),
@@ -2310,7 +2313,7 @@ CONNECTOR_REQUIRED_CELLS = (
     ('ConFixedCode', 'V', '3'),
     ('DynFeedback', 'V', '2'),
     ('NoLiveDynamics', 'V', '1'),
-    ('ConLineRouteExt', 'V', '1'),
+    ('ConLineRouteExt', 'V', '0'),
     ('ShapeRouteStyle', 'V', '16'),
     ('ObjType', 'V', '2'),
     ('NoAlignBox', 'V', '1'),

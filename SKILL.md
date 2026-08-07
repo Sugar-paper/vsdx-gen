@@ -231,6 +231,10 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<skill-dir>\script
     `Width*0 / Width*0.5 / Width*1`（Y 对应 `Height*`），并写出 `Angle/FlipX/FlipY/
     ResizeMode` 与公式化 `LocPinX/Y`，与 Visio 自绘矩形结构一致；draw.io 几何行只读 V
     属性，加 F 公式不影响导入
+17. **连接线必须关闭 Visio 动态重路由**：`ConLineRouteExt` 必须是 `0`。置 `1` 时 Visio 2016
+    在拖动/重排图形时用自带直角路由引擎重新布线，折线会贴节点边缘；作者坐标（含自动
+    Z 形折线）始终干净，关掉重路由后 Visio 只显示生成器写好的折线。`ShapeRouteStyle=16`
+    可保留，路由关闭时不生效
 
 ## 使用示例
 

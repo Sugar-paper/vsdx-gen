@@ -2116,7 +2116,7 @@ class VisioCompatibilityTests(unittest.TestCase):
         for name, expected in (
                 ("GlueType", "2"), ("ConFixedCode", "3"),
                 ("DynFeedback", "2"), ("NoLiveDynamics", "1"),
-                ("ConLineRouteExt", "1"), ("ShapeRouteStyle", "16"),
+                ("ConLineRouteExt", "0"), ("ShapeRouteStyle", "16"),
                 ("ObjType", "2"), ("NoAlignBox", "1"),
                 ("ShapeSplittable", "1"), ("IsTextEditTarget", "0"),
                 ("DontMoveChildren", "0"), ("FillPattern", "0")):
